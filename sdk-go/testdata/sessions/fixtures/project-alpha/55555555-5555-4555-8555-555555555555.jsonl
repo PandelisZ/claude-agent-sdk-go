@@ -1,0 +1,8 @@
+{"type":"user","uuid":"55555555-0000-4000-8000-000000000001","sessionId":"55555555-5555-4555-8555-555555555555","isCompactSummary":true,"timestamp":"2026-01-10T09:00:00.000Z","cwd":"/tmp/workspace/project-alpha","message":{"role":"user","content":"Compacted conversation summary"}}
+{"type":"assistant","uuid":"55555555-0000-4000-8000-000000000002","parentUuid":"55555555-0000-4000-8000-000000000001","sessionId":"55555555-5555-4555-8555-555555555555","message":{"role":"assistant","content":"Carrying forward the context."}}
+{"type":"user","uuid":"55555555-0000-4000-8000-000000000003","parentUuid":"55555555-0000-4000-8000-000000000002","sessionId":"55555555-5555-4555-8555-555555555555","message":{"role":"user","content":"Continue the work"}}
+{"type":"assistant","uuid":"55555555-0000-4000-8000-000000000004","parentUuid":"55555555-0000-4000-8000-000000000003","sessionId":"55555555-5555-4555-8555-555555555555","message":{"role":"assistant","content":"Main answer"}}
+not valid json {{{
+{"type":"assistant","uuid":"55555555-0000-4000-8000-000000000005","parentUuid":"55555555-0000-4000-8000-000000000003","sessionId":"55555555-5555-4555-8555-555555555555","isSidechain":true,"message":{"role":"assistant","content":"Side branch answer"}}
+{"type":"user","uuid":"55555555-0000-4000-8000-000000000006","parentUuid":"55555555-0000-4000-8000-000000000004","sessionId":"55555555-5555-4555-8555-555555555555","isMeta":true,"message":{"role":"user","content":"Meta bridge"}}
+{"type":"assistant","uuid":"55555555-0000-4000-8000-000000000007","parentUuid":"55555555-0000-4000-8000-000000000006","sessionId":"55555555-5555-4555-8555-555555555555","message":{"role":"assistant","content":"Final visible answer"}}

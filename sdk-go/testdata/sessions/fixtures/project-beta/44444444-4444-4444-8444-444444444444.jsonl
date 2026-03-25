@@ -1,0 +1,3 @@
+{"type":"user","uuid":"44444444-0000-4000-8000-000000000001","sessionId":"44444444-4444-4444-8444-444444444444","timestamp":"2026-02-03T04:05:06.000Z","cwd":"/tmp/workspace/project-beta","message":{"role":"user","content":"<command-name>/help</command-name>"}}
+{"type":"assistant","uuid":"44444444-0000-4000-8000-000000000002","parentUuid":"44444444-0000-4000-8000-000000000001","sessionId":"44444444-4444-4444-8444-444444444444","message":{"role":"assistant","content":"Help text"}}
+{"type":"metadata","aiTitle":"AI generated beta title","sessionId":"44444444-4444-4444-8444-444444444444"}

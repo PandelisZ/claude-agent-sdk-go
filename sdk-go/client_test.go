@@ -180,7 +180,7 @@ func TestClientHookCallbackRegistrationAndResponse(t *testing.T) {
 								Decision:      stringPtr("block"),
 								SystemMessage: stringPtr("blocked"),
 								HookSpecificOutput: map[string]any{
-									"hookEventName":    "PreToolUse",
+									"hookEventName":     "PreToolUse",
 									"additionalContext": "extra",
 								},
 							}, nil
@@ -397,5 +397,5 @@ func assistantText(t *testing.T, message *AssistantMessage) string {
 	return strings.TrimSpace(block.Text)
 }
 
-func boolPtr(value bool) *bool { return &value }
+func boolPtr(value bool) *bool       { return &value }
 func stringPtr(value string) *string { return &value }
