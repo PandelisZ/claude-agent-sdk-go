@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	claudeagentsdk "github.com/anthropics/claude-agent-sdk-python/sdk-go"
+	claudeagentsdk "github.com/PandelisZ/claude-agent-sdk-go"
 )
 
 func TestParseJSONAssistantAuthFailure(t *testing.T) {

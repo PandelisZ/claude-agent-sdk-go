@@ -1,3 +1,3 @@
-module github.com/anthropics/claude-agent-sdk-python/sdk-go
+module github.com/PandelisZ/claude-agent-sdk-go
 
 go 1.21

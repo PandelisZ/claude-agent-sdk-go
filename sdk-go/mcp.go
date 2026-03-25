@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/anthropics/claude-agent-sdk-python/sdk-go/internal/protocol"
+	"github.com/PandelisZ/claude-agent-sdk-go/internal/protocol"
 )
 
 type SDKMCPServer interface {

@@ -1,30 +1,11 @@
-# Claude Agent SDK
+# Claude Agent SDK for Go
 
-This repository contains the Python SDK and a Go SDK for Claude Agent.
+This repository is a fork of the upstream Python Claude Agent SDK repository and adds a Go SDK for Claude Agent.
 
-- Python SDK: see the [Claude Agent SDK documentation](https://platform.claude.com/docs/en/agent-sdk/python)
-- Go SDK: see [sdk-go/README.md](sdk-go/README.md)
+- Go SDK docs: [sdk-go/README.md](sdk-go/README.md)
+- Upstream Python SDK docs: [Claude Agent SDK documentation](https://platform.claude.com/docs/en/agent-sdk/python)
 
 ## Installation
-
-```bash
-pip install claude-agent-sdk
-```
-
-**Prerequisites:**
-
-- Python 3.10+
-
-**Note:** The Claude Code CLI is automatically bundled with the package - no separate installation required! The SDK will use the bundled CLI by default. If you prefer to use a system-wide installation or a specific version, you can:
-
-- Install Claude Code separately: `curl -fsSL https://claude.ai/install.sh | bash`
-- Specify a custom path: `ClaudeAgentOptions(cli_path="/path/to/claude")`
-
-## Go SDK
-
-The Go SDK lives in [sdk-go/](sdk-go/) and drives a local Claude Code CLI installation.
-
-### Installation
 
 ```bash
 go get github.com/anthropics/claude-agent-sdk-python/sdk-go
@@ -34,13 +15,13 @@ go get github.com/anthropics/claude-agent-sdk-python/sdk-go
 
 - Go 1.21+
 - A local Claude Code CLI installation
-- An authenticated Claude CLI session for the account you want to use
+- An authenticated Claude CLI session
 
-Unlike the Python SDK, the Go SDK does not bundle the Claude CLI or provide an SDK-level login flow. By default it looks for `claude` on your `PATH`. If you need to pin a specific binary or config directory, set `ClaudeAgentOptions.CLIPath` and `ClaudeAgentOptions.Env`.
+Unlike the upstream Python SDK, the Go SDK does not bundle the Claude CLI or provide an SDK-level login flow. It uses your local `claude` installation exactly as configured on your machine.
 
-### Quick Start
+## Quick Start
 
-Use `Query` for one-shot requests and `QueryWithCallback` when you want streamed messages.
+Use `Query` for buffered one-shot requests and `QueryWithCallback` when you want streaming callbacks.
 
 ```go
 package main
@@ -76,286 +57,52 @@ func main() {
 }
 ```
 
-### What the Go SDK covers
+## CLI configuration
 
-- one-shot inferencing with `Query` / `QueryWithCallback`
+By default, the SDK looks for `claude` on your `PATH`.
+
+- Set `ClaudeAgentOptions.CLIPath` to pin a specific Claude CLI binary.
+- Set `ClaudeAgentOptions.Env` to pass environment such as `CLAUDE_CONFIG_DIR`.
+- Use the same `CLAUDE_CONFIG_DIR` for both runtime calls and local session helpers if you want them to point at the same local Claude state.
+
+```go
+ctx := context.Background()
+cliPath := "/usr/local/bin/claude"
+configDir := os.Getenv("CLAUDE_CONFIG_DIR")
+
+err := claudeagentsdk.QueryWithCallback(ctx, "Hello", claudeagentsdk.ClaudeAgentOptions{
+	CLIPath: &cliPath,
+	Env: map[string]string{
+		"CLAUDE_CONFIG_DIR": configDir,
+	},
+}, func(message claudeagentsdk.Message) error {
+	return nil
+})
+if err != nil {
+	log.Fatal(err)
+}
+```
+
+## What the Go SDK covers
+
+- one-shot inferencing with `Query` and `QueryWithCallback`
 - interactive sessions with `Client`
 - permission callbacks, hooks, and SDK-backed MCP servers
 - local session listing, transcript reads, and metadata updates
 
-For full installation details, auth/config guidance, interactive client examples, and session APIs, see [sdk-go/README.md](sdk-go/README.md) and the runnable examples in [sdk-go/examples/](sdk-go/examples/).
-
-## Quick Start
-
-```python
-import anyio
-from claude_agent_sdk import query
-
-async def main():
-    async for message in query(prompt="What is 2 + 2?"):
-        print(message)
-
-anyio.run(main)
-```
-
-## Basic Usage: query()
-
-`query()` is an async function for querying Claude Code. It returns an `AsyncIterator` of response messages. See [src/claude_agent_sdk/query.py](src/claude_agent_sdk/query.py).
-
-```python
-from claude_agent_sdk import query, ClaudeAgentOptions, AssistantMessage, TextBlock
-
-# Simple query
-async for message in query(prompt="Hello Claude"):
-    if isinstance(message, AssistantMessage):
-        for block in message.content:
-            if isinstance(block, TextBlock):
-                print(block.text)
-
-# With options
-options = ClaudeAgentOptions(
-    system_prompt="You are a helpful assistant",
-    max_turns=1
-)
-
-async for message in query(prompt="Tell me a joke", options=options):
-    print(message)
-```
-
-### Using Tools
-
-By default, Claude has access to the full [Claude Code toolset](https://code.claude.com/docs/en/settings#tools-available-to-claude) (Read, Write, Edit, Bash, and others). `allowed_tools` is a permission allowlist: listed tools are auto-approved, and unlisted tools fall through to `permission_mode` and `can_use_tool` for a decision. It does not remove tools from Claude's toolset. To block specific tools, use `disallowed_tools`. See the [permissions guide](https://platform.claude.com/docs/en/agent-sdk/permissions) for the full evaluation order.
-
-```python
-options = ClaudeAgentOptions(
-    allowed_tools=["Read", "Write", "Bash"],  # auto-approve these tools
-    permission_mode='acceptEdits'  # auto-accept file edits
-)
-
-async for message in query(
-    prompt="Create a hello.py file",
-    options=options
-):
-    # Process tool use and results
-    pass
-```
-
-### Working Directory
-
-```python
-from pathlib import Path
-
-options = ClaudeAgentOptions(
-    cwd="/path/to/project"  # or Path("/path/to/project")
-)
-```
-
-## ClaudeSDKClient
-
-`ClaudeSDKClient` supports bidirectional, interactive conversations with Claude
-Code. See [src/claude_agent_sdk/client.py](src/claude_agent_sdk/client.py).
-
-Unlike `query()`, `ClaudeSDKClient` additionally enables **custom tools** and **hooks**, both of which can be defined as Python functions.
-
-### Custom Tools (as In-Process SDK MCP Servers)
-
-A **custom tool** is a Python function that you can offer to Claude, for Claude to invoke as needed.
-
-Custom tools are implemented in-process MCP servers that run directly within your Python application, eliminating the need for separate processes that regular MCP servers require.
-
-For an end-to-end example, see [MCP Calculator](examples/mcp_calculator.py).
-
-#### Creating a Simple Tool
-
-```python
-from claude_agent_sdk import tool, create_sdk_mcp_server, ClaudeAgentOptions, ClaudeSDKClient
-
-# Define a tool using the @tool decorator
-@tool("greet", "Greet a user", {"name": str})
-async def greet_user(args):
-    return {
-        "content": [
-            {"type": "text", "text": f"Hello, {args['name']}!"}
-        ]
-    }
-
-# Create an SDK MCP server
-server = create_sdk_mcp_server(
-    name="my-tools",
-    version="1.0.0",
-    tools=[greet_user]
-)
-
-# Use it with Claude. allowed_tools pre-approves the tool so it runs
-# without a permission prompt; it does not control tool availability.
-options = ClaudeAgentOptions(
-    mcp_servers={"tools": server},
-    allowed_tools=["mcp__tools__greet"]
-)
-
-async with ClaudeSDKClient(options=options) as client:
-    await client.query("Greet Alice")
-
-    # Extract and print response
-    async for msg in client.receive_response():
-        print(msg)
-```
-
-#### Benefits Over External MCP Servers
-
-- **No subprocess management** - Runs in the same process as your application
-- **Better performance** - No IPC overhead for tool calls
-- **Simpler deployment** - Single Python process instead of multiple
-- **Easier debugging** - All code runs in the same process
-- **Type safety** - Direct Python function calls with type hints
-
-#### Migration from External Servers
-
-```python
-# BEFORE: External MCP server (separate process)
-options = ClaudeAgentOptions(
-    mcp_servers={
-        "calculator": {
-            "type": "stdio",
-            "command": "python",
-            "args": ["-m", "calculator_server"]
-        }
-    }
-)
-
-# AFTER: SDK MCP server (in-process)
-from my_tools import add, subtract  # Your tool functions
-
-calculator = create_sdk_mcp_server(
-    name="calculator",
-    tools=[add, subtract]
-)
-
-options = ClaudeAgentOptions(
-    mcp_servers={"calculator": calculator}
-)
-```
-
-#### Mixed Server Support
-
-You can use both SDK and external MCP servers together:
-
-```python
-options = ClaudeAgentOptions(
-    mcp_servers={
-        "internal": sdk_server,      # In-process SDK server
-        "external": {                # External subprocess server
-            "type": "stdio",
-            "command": "external-server"
-        }
-    }
-)
-```
-
-### Hooks
-
-A **hook** is a Python function that the Claude Code _application_ (_not_ Claude) invokes at specific points of the Claude agent loop. Hooks can provide deterministic processing and automated feedback for Claude. Read more in [Intercept and control agent behavior with hooks](https://platform.claude.com/docs/en/agent-sdk/hooks).
-
-For more examples, see examples/hooks.py.
-
-#### Example
-
-```python
-from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
-
-async def check_bash_command(input_data, tool_use_id, context):
-    tool_name = input_data["tool_name"]
-    tool_input = input_data["tool_input"]
-    if tool_name != "Bash":
-        return {}
-    command = tool_input.get("command", "")
-    block_patterns = ["foo.sh"]
-    for pattern in block_patterns:
-        if pattern in command:
-            return {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": f"Command contains invalid pattern: {pattern}",
-                }
-            }
-    return {}
-
-options = ClaudeAgentOptions(
-    allowed_tools=["Bash"],
-    hooks={
-        "PreToolUse": [
-            HookMatcher(matcher="Bash", hooks=[check_bash_command]),
-        ],
-    }
-)
-
-async with ClaudeSDKClient(options=options) as client:
-    # Test 1: Command with forbidden pattern (will be blocked)
-    await client.query("Run the bash command: ./foo.sh --help")
-    async for msg in client.receive_response():
-        print(msg)
-
-    print("\n" + "=" * 50 + "\n")
-
-    # Test 2: Safe command that should work
-    await client.query("Run the bash command: echo 'Hello from hooks example!'")
-    async for msg in client.receive_response():
-        print(msg)
-```
-
-## Types
-
-See [src/claude_agent_sdk/types.py](src/claude_agent_sdk/types.py) for complete type definitions:
-
-- `ClaudeAgentOptions` - Configuration options
-- `AssistantMessage`, `UserMessage`, `SystemMessage`, `ResultMessage` - Message types
-- `TextBlock`, `ToolUseBlock`, `ToolResultBlock` - Content blocks
-
-## Error Handling
-
-```python
-from claude_agent_sdk import (
-    ClaudeSDKError,      # Base error
-    CLINotFoundError,    # Claude Code not installed
-    CLIConnectionError,  # Connection issues
-    ProcessError,        # Process failed
-    CLIJSONDecodeError,  # JSON parsing issues
-)
-
-try:
-    async for message in query(prompt="Hello"):
-        pass
-except CLINotFoundError:
-    print("Please install Claude Code")
-except ProcessError as e:
-    print(f"Process failed with exit code: {e.exit_code}")
-except CLIJSONDecodeError as e:
-    print(f"Failed to parse response: {e}")
-```
-
-See [src/claude_agent_sdk/\_errors.py](src/claude_agent_sdk/_errors.py) for all error types.
-
-## Available Tools
-
-See the [Claude Code documentation](https://code.claude.com/docs/en/settings#tools-available-to-claude) for a complete list of available tools.
-
-## Examples
-
-See [examples/quick_start.py](examples/quick_start.py) for a complete working example.
-
-See [examples/streaming_mode.py](examples/streaming_mode.py) for comprehensive examples involving `ClaudeSDKClient`. You can even run interactive examples in IPython from [examples/streaming_mode_ipython.py](examples/streaming_mode_ipython.py).
-
-## Migrating from Claude Code SDK
-
-If you're upgrading from the Claude Code SDK (versions < 0.1.0), please see the [CHANGELOG.md](CHANGELOG.md#010) for details on breaking changes and new features, including:
-
-- `ClaudeCodeOptions` → `ClaudeAgentOptions` rename
-- Merged system prompt configuration
-- Settings isolation and explicit control
-- New programmatic subagents and session forking features
+Runnable examples live in [sdk-go/examples/](sdk-go/examples/):
+
+- `sdk-go/examples/query/`
+- `sdk-go/examples/client/`
+- `sdk-go/examples/control/`
+- `sdk-go/examples/auth/`
+- `sdk-go/examples/sessions/`
+
+For full usage details, typed errors, interactive client controls, and session APIs, see [sdk-go/README.md](sdk-go/README.md).
 
 ## Development
+
+The development and release notes below are mostly inherited from the upstream Python SDK repository and are primarily relevant if you're working on the Python packaging side of this fork.
 
 If you're contributing to this project, run the initial setup script to install git hooks:
 

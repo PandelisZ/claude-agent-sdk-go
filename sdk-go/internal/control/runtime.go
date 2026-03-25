@@ -11,9 +11,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/anthropics/claude-agent-sdk-python/sdk-go/internal/hooks"
-	"github.com/anthropics/claude-agent-sdk-python/sdk-go/internal/protocol"
-	internaltransport "github.com/anthropics/claude-agent-sdk-python/sdk-go/internal/transport"
+	"github.com/PandelisZ/claude-agent-sdk-go/internal/hooks"
+	"github.com/PandelisZ/claude-agent-sdk-go/internal/protocol"
+	internaltransport "github.com/PandelisZ/claude-agent-sdk-go/internal/transport"
 )
 
 type MCPHandler func(context.Context, map[string]any) (map[string]any, error)

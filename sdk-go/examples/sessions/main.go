@@ -5,7 +5,7 @@ import (
 	"log"
 	"os"
 
-	claudeagentsdk "github.com/anthropics/claude-agent-sdk-python/sdk-go"
+	claudeagentsdk "github.com/PandelisZ/claude-agent-sdk-go"
 )
 
 func main() {

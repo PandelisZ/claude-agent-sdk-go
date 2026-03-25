@@ -12,7 +12,7 @@ The module covers the core Go-facing SDK flows:
 ## Installation
 
 ```bash
-go get github.com/anthropics/claude-agent-sdk-python/sdk-go
+go get github.com/PandelisZ/claude-agent-sdk-go
 ```
 
 **Prerequisites**

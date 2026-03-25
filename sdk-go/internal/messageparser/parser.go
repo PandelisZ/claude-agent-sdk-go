@@ -3,8 +3,8 @@ package messageparser
 import (
 	"fmt"
 
-	claudeagentsdk "github.com/anthropics/claude-agent-sdk-python/sdk-go"
-	"github.com/anthropics/claude-agent-sdk-python/sdk-go/internal/protocol"
+	claudeagentsdk "github.com/PandelisZ/claude-agent-sdk-go"
+	"github.com/PandelisZ/claude-agent-sdk-go/internal/protocol"
 )
 
 // ParseJSON parses one raw CLI JSON payload into a public message value.

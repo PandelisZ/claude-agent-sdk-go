@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anthropics/claude-agent-sdk-python/sdk-go/internal/control"
-	internalhooks "github.com/anthropics/claude-agent-sdk-python/sdk-go/internal/hooks"
-	internaltransport "github.com/anthropics/claude-agent-sdk-python/sdk-go/internal/transport"
+	"github.com/PandelisZ/claude-agent-sdk-go/internal/control"
+	internalhooks "github.com/PandelisZ/claude-agent-sdk-go/internal/hooks"
+	internaltransport "github.com/PandelisZ/claude-agent-sdk-go/internal/transport"
 )
 
 type ToolPermissionContext = internalhooks.ToolPermissionContext

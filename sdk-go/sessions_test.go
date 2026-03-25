@@ -300,7 +300,7 @@ func TestRenameAndTagSessionAppendMetadataAndClearTag(t *testing.T) {
 		t.Fatalf("expected cleared tag to read back as nil, got %#v", info.Tag)
 	}
 
-	sessionFile := filepath.Join(configDir, "projects", sanitizePathForTests(projectAlphaPath), alphaMetadataSessionID+".jsonl")
+	sessionFile := filepath.Join(configDir, "projects", sanitizePathForTests(canonicalizePathForTests(projectAlphaPath)), alphaMetadataSessionID+".jsonl")
 	lines := readNonEmptyLines(t, sessionFile)
 	if !strings.Contains(lines[len(lines)-3], `"type":"custom-title","customTitle":"Final title","sessionId":"`+alphaMetadataSessionID+`"`) {
 		t.Fatalf("expected compact custom-title entry near tail, got %q", lines[len(lines)-3])

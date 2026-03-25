@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	internalsessions "github.com/anthropics/claude-agent-sdk-python/sdk-go/internal/sessions"
+	internalsessions "github.com/PandelisZ/claude-agent-sdk-go/internal/sessions"
 )
 
 var sessionUUIDRe = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
