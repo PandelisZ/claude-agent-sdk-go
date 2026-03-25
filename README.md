@@ -1,6 +1,9 @@
-# Claude Agent SDK for Python
+# Claude Agent SDK
 
-Python SDK for Claude Agent. See the [Claude Agent SDK documentation](https://platform.claude.com/docs/en/agent-sdk/python) for more information.
+This repository contains the Python SDK and a Go SDK for Claude Agent.
+
+- Python SDK: see the [Claude Agent SDK documentation](https://platform.claude.com/docs/en/agent-sdk/python)
+- Go SDK: see [sdk-go/README.md](sdk-go/README.md)
 
 ## Installation
 
@@ -16,6 +19,71 @@ pip install claude-agent-sdk
 
 - Install Claude Code separately: `curl -fsSL https://claude.ai/install.sh | bash`
 - Specify a custom path: `ClaudeAgentOptions(cli_path="/path/to/claude")`
+
+## Go SDK
+
+The Go SDK lives in [sdk-go/](sdk-go/) and drives a local Claude Code CLI installation.
+
+### Installation
+
+```bash
+go get github.com/anthropics/claude-agent-sdk-python/sdk-go
+```
+
+**Prerequisites:**
+
+- Go 1.21+
+- A local Claude Code CLI installation
+- An authenticated Claude CLI session for the account you want to use
+
+Unlike the Python SDK, the Go SDK does not bundle the Claude CLI or provide an SDK-level login flow. By default it looks for `claude` on your `PATH`. If you need to pin a specific binary or config directory, set `ClaudeAgentOptions.CLIPath` and `ClaudeAgentOptions.Env`.
+
+### Quick Start
+
+Use `Query` for one-shot requests and `QueryWithCallback` when you want streamed messages.
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	claudeagentsdk "github.com/anthropics/claude-agent-sdk-python/sdk-go"
+)
+
+func main() {
+	ctx := context.Background()
+	maxTurns := 1
+
+	messages, err := claudeagentsdk.Query(ctx, "Summarize this repository", claudeagentsdk.ClaudeAgentOptions{
+		MaxTurns: &maxTurns,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for _, message := range messages {
+		if assistant, ok := message.(*claudeagentsdk.AssistantMessage); ok {
+			for _, block := range assistant.Content {
+				if text, ok := block.(claudeagentsdk.TextBlock); ok {
+					fmt.Println(text.Text)
+				}
+			}
+		}
+	}
+}
+```
+
+### What the Go SDK covers
+
+- one-shot inferencing with `Query` / `QueryWithCallback`
+- interactive sessions with `Client`
+- permission callbacks, hooks, and SDK-backed MCP servers
+- local session listing, transcript reads, and metadata updates
+
+For full installation details, auth/config guidance, interactive client examples, and session APIs, see [sdk-go/README.md](sdk-go/README.md) and the runnable examples in [sdk-go/examples/](sdk-go/examples/).
 
 ## Quick Start
 
