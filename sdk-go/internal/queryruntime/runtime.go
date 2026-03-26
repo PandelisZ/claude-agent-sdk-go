@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"io"
 
-	internaltransport "github.com/PandelisZ/claude-agent-sdk-go/internal/transport"
+	internaltransport "github.com/PandelisZ/claude-agent-sdk-go/sdk-go/internal/transport"
 )
 
 // Runner coordinates one-shot prompt execution over a transport.

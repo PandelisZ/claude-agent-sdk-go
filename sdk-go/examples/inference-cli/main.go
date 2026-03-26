@@ -10,7 +10,7 @@ import (
 	"os"
 	"strings"
 
-	claudeagentsdk "github.com/PandelisZ/claude-agent-sdk-go"
+	claudeagentsdk "github.com/PandelisZ/claude-agent-sdk-go/sdk-go"
 )
 
 func main() {

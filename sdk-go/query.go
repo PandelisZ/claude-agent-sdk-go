@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/PandelisZ/claude-agent-sdk-go/internal/protocol"
-	"github.com/PandelisZ/claude-agent-sdk-go/internal/queryruntime"
-	internaltransport "github.com/PandelisZ/claude-agent-sdk-go/internal/transport"
+	"github.com/PandelisZ/claude-agent-sdk-go/sdk-go/internal/protocol"
+	"github.com/PandelisZ/claude-agent-sdk-go/sdk-go/internal/queryruntime"
+	internaltransport "github.com/PandelisZ/claude-agent-sdk-go/sdk-go/internal/transport"
 )
 
 // QueryHandler receives one parsed CLI message at a time.
