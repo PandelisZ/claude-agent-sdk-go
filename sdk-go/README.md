@@ -21,9 +21,8 @@ go get github.com/PandelisZ/claude-agent-sdk-go
 - A local Claude Code CLI installation
 - The CLI already authenticated for the account you want to use
 
-Unlike the Python SDK, the Go SDK does not bundle the Claude CLI or provide an
-SDK-level login flow. It uses the local CLI exactly as installed on your
-machine.
+The Go SDK does not bundle the Claude CLI or provide an SDK-level login flow.
+It uses the local CLI exactly as installed on your machine.
 
 ## CLI and auth expectations
 
@@ -157,6 +156,7 @@ For runnable snippets, see:
 - `examples/auth/main.go`
 - `examples/client/main.go`
 - `examples/control/main.go`
+- `examples/inference-cli/main.go`
 - `examples/query/main.go`
 - `examples/sessions/main.go`
 
@@ -226,13 +226,12 @@ The Go SDK currently covers:
   SDK-backed MCP servers
 - local session discovery, transcript reconstruction, and metadata mutation
 
-## Notable differences from the Python SDK
+## Current limitations
 
 - no bundled Claude CLI; the Go SDK expects a local CLI installation
 - no SDK-managed auth/login helper; auth is whatever the local CLI is already
   configured for
-- synchronous/blocking API shape rather than Python's async iterator/context
-  manager style
+- synchronous/blocking API shape
 - the Go package docs and `examples/` directory focus on the main query,
   auth/environment, interactive control, and local session flows rather than
-  mirroring every Python helper one-for-one
+  covering every helper surface
