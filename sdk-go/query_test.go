@@ -80,6 +80,31 @@ func TestQueryAuthAssistantMessageRemainsTypedMessage(t *testing.T) {
 	}
 }
 
+func TestParseQueryPayloadTaskNotificationAllowsMissingDescription(t *testing.T) {
+	payload := map[string]any{
+		"type":        "system",
+		"subtype":     "task_notification",
+		"task_id":     "task-1",
+		"status":      "completed",
+		"output_file": "/tmp/out.md",
+		"summary":     "All done",
+		"uuid":        "uuid-3",
+		"session_id":  "session-1",
+	}
+
+	message, err := parseQueryPayload(payload)
+	if err != nil {
+		t.Fatalf("parseQueryPayload returned error: %v", err)
+	}
+	notification, ok := message.(*TaskNotificationMessage)
+	if !ok {
+		t.Fatalf("expected TaskNotificationMessage, got %T", message)
+	}
+	if notification.TaskID != "task-1" || notification.Summary != "All done" {
+		t.Fatalf("unexpected task notification payload: %#v", notification)
+	}
+}
+
 func buildFakeCLI(t *testing.T) string {
 	t.Helper()
 

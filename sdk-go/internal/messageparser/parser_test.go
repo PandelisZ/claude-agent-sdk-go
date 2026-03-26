@@ -127,6 +127,31 @@ func TestParsePayloadTaskSystemMessages(t *testing.T) {
 	}
 }
 
+func TestParsePayloadTaskNotificationAllowsMissingDescription(t *testing.T) {
+	payload := map[string]any{
+		"type":        "system",
+		"subtype":     "task_notification",
+		"task_id":     "task-1",
+		"status":      "completed",
+		"output_file": "/tmp/out.md",
+		"summary":     "All done",
+		"uuid":        "uuid-3",
+		"session_id":  "session-1",
+	}
+
+	message, err := ParsePayload(payload)
+	if err != nil {
+		t.Fatalf("ParsePayload returned error: %v", err)
+	}
+	notification, ok := message.(*claudeagentsdk.TaskNotificationMessage)
+	if !ok {
+		t.Fatalf("expected TaskNotificationMessage, got %T", message)
+	}
+	if notification.TaskID != "task-1" || notification.Summary != "All done" {
+		t.Fatalf("unexpected task notification payload: %#v", notification)
+	}
+}
+
 func TestParsePayloadRateLimitEvent(t *testing.T) {
 	payload := map[string]any{
 		"type": "rate_limit_event",

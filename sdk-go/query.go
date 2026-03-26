@@ -604,10 +604,7 @@ func requiredQueryTaskCommon(payload map[string]any) (taskID string, description
 	if err != nil {
 		return "", "", "", "", NewMessageParseError("missing required field in system message: 'task_id'", payload)
 	}
-	description, err = protocol.RequireString(payload, "description")
-	if err != nil {
-		return "", "", "", "", NewMessageParseError("missing required field in system message: 'description'", payload)
-	}
+	description, _ = protocol.StringValue(payload, "description")
 	uuid, err = protocol.RequireString(payload, "uuid")
 	if err != nil {
 		return "", "", "", "", NewMessageParseError("missing required field in system message: 'uuid'", payload)
