@@ -1,0 +1,33 @@
+(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12)
+(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13)
+(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14)
+(T0, T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15)
+types::_::<impl Deserialize<'de> for AssistantContent>::deserialize::__Field
+types::_::<impl Deserialize<'de> for AssistantMessageErrorKind>::deserialize::__Field
+types::_::<impl Deserialize<'de> for MCPServerConfig>::deserialize::__Field
+types::_::<impl Deserialize<'de> for MCPServerConnectionStatus>::deserialize::__Field
+types::_::<impl Deserialize<'de> for MCPServerInfo>::deserialize::__Field
+types::_::<impl Deserialize<'de> for MCPServerStatus>::deserialize::__Field
+types::_::<impl Deserialize<'de> for MCPServerStatusConfig>::deserialize::__Field
+types::_::<impl Deserialize<'de> for MCPStatusResponse>::deserialize::__Field
+types::_::<impl Deserialize<'de> for MCPToolAnnotations>::deserialize::__Field
+types::_::<impl Deserialize<'de> for MCPToolInfo>::deserialize::__Field
+types::_::<impl Deserialize<'de> for PermissionMode>::deserialize::__Field
+types::_::<impl Deserialize<'de> for RateLimitInfo>::deserialize::__Field
+types::_::<impl Deserialize<'de> for RateLimitStatus>::deserialize::__Field
+types::_::<impl Deserialize<'de> for RateLimitType>::deserialize::__Field
+types::_::<impl Deserialize<'de> for SDKPluginConfig>::deserialize::__Field
+types::_::<impl Deserialize<'de> for SdkBeta>::deserialize::__Field
+types::_::<impl Deserialize<'de> for SettingSource>::deserialize::__Field
+types::_::<impl Deserialize<'de> for SystemPromptFile>::deserialize::__Field
+types::_::<impl Deserialize<'de> for SystemPromptPreset>::deserialize::__Field
+types::_::<impl Deserialize<'de> for TaskNotificationMessage>::deserialize::__Field
+types::_::<impl Deserialize<'de> for TaskNotificationStatus>::deserialize::__Field
+types::_::<impl Deserialize<'de> for TaskProgressMessage>::deserialize::__Field
+types::_::<impl Deserialize<'de> for TaskStartedMessage>::deserialize::__Field
+types::_::<impl Deserialize<'de> for TaskUsage>::deserialize::__Field
+types::_::<impl Deserialize<'de> for ThinkingConfig>::deserialize::__Field
+types::_::<impl Deserialize<'de> for ThinkingConfigType>::deserialize::__Field
+types::_::<impl Deserialize<'de> for ToolsPreset>::deserialize::__Field
+types::_::<impl Deserialize<'de> for UserContent>::deserialize::__Field
+types::_::<impl Deserialize<'de> for UserContentKind>::deserialize::__Field
