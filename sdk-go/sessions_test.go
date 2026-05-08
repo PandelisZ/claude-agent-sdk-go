@@ -99,6 +99,14 @@ func TestListSessionsHonorsClaudeConfigDirAndExtractsMetadata(t *testing.T) {
 	if allSessions[0].SessionID != betaAITitleSessionID {
 		t.Fatalf("expected newest session first across all projects, got %s", allSessions[0].SessionID)
 	}
+
+	offsetSessions, err := ListSessions(ListSessionsOptions{Limit: 1, Offset: 1})
+	if err != nil {
+		t.Fatalf("ListSessions(offset) returned error: %v", err)
+	}
+	if len(offsetSessions) != 1 || offsetSessions[0].SessionID != alphaTranscriptSessionID {
+		t.Fatalf("unexpected offset page: %#v", offsetSessions)
+	}
 }
 
 func TestListSessionsUsesDefaultHomeWhenEnvUnset(t *testing.T) {
@@ -267,6 +275,67 @@ func TestGetSessionMessagesReconstructsTranscriptAndPaginates(t *testing.T) {
 	}
 }
 
+func TestListSubagentsAndGetSubagentMessages(t *testing.T) {
+	configDir := filepath.Join(t.TempDir(), "claude-config")
+	stageFixtureProject(t, "project-alpha", configDir, projectAlphaPath)
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+
+	projectDir := filepath.Join(configDir, "projects", sanitizePathForTests(canonicalizePathForTests(projectAlphaPath)))
+	subagentsDir := filepath.Join(projectDir, alphaTranscriptSessionID, "subagents")
+	nestedDir := filepath.Join(subagentsDir, "workflows", "run-1")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatalf("failed to create nested subagent dir: %v", err)
+	}
+
+	directTranscript := strings.Join([]string{
+		`{"type":"user","uuid":"sub-user-1","sessionId":"` + alphaTranscriptSessionID + `","message":{"role":"user","content":"Inspect this"},"parentUuid":""}`,
+		`{"type":"user","uuid":"sub-stale","sessionId":"` + alphaTranscriptSessionID + `","message":{"role":"user","content":"old branch"},"parentUuid":""}`,
+		`{"type":"assistant","uuid":"sub-assistant-1","sessionId":"` + alphaTranscriptSessionID + `","message":{"role":"assistant","content":[{"type":"text","text":"Done"}]},"parentUuid":"sub-user-1"}`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(subagentsDir, "agent-reviewer.jsonl"), []byte(directTranscript), 0o644); err != nil {
+		t.Fatalf("failed to write direct subagent transcript: %v", err)
+	}
+	nestedTranscript := strings.Join([]string{
+		`{"type":"user","uuid":"nested-user","sessionId":"` + alphaTranscriptSessionID + `","message":{"role":"user","content":"Nested"},"parentUuid":""}`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(nestedDir, "agent-planner.jsonl"), []byte(nestedTranscript), 0o644); err != nil {
+		t.Fatalf("failed to write nested subagent transcript: %v", err)
+	}
+
+	agents, err := ListSubagents(alphaTranscriptSessionID, SessionQueryOptions{Directory: projectAlphaPath})
+	if err != nil {
+		t.Fatalf("ListSubagents returned error: %v", err)
+	}
+	if strings.Join(agents, ",") != "reviewer,planner" {
+		t.Fatalf("unexpected subagent list: %#v", agents)
+	}
+
+	messages, err := GetSubagentMessages(alphaTranscriptSessionID, "reviewer", SessionQueryOptions{Directory: projectAlphaPath})
+	if err != nil {
+		t.Fatalf("GetSubagentMessages returned error: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 subagent messages in active chain, got %d: %#v", len(messages), messages)
+	}
+	if messages[0].UUID != "sub-user-1" || messages[1].UUID != "sub-assistant-1" {
+		t.Fatalf("unexpected subagent messages: %#v", messages)
+	}
+
+	page, err := GetSubagentMessages(alphaTranscriptSessionID, "reviewer", SessionQueryOptions{
+		Directory: projectAlphaPath,
+		Limit:     1,
+		Offset:    1,
+	})
+	if err != nil {
+		t.Fatalf("GetSubagentMessages page returned error: %v", err)
+	}
+	if len(page) != 1 || page[0].UUID != "sub-assistant-1" {
+		t.Fatalf("unexpected subagent page: %#v", page)
+	}
+}
+
 func TestRenameAndTagSessionAppendMetadataAndClearTag(t *testing.T) {
 	configDir := filepath.Join(t.TempDir(), "claude-config")
 	stageFixtureProject(t, "project-alpha", configDir, projectAlphaPath)
@@ -310,6 +379,87 @@ func TestRenameAndTagSessionAppendMetadataAndClearTag(t *testing.T) {
 	}
 	if !strings.Contains(lines[len(lines)-1], `"type":"tag","tag":"","sessionId":"`+alphaMetadataSessionID+`"`) {
 		t.Fatalf("expected clear-tag entry at EOF, got %q", lines[len(lines)-1])
+	}
+}
+
+func TestDeleteSessionRemovesTranscriptAndSubagentDirectory(t *testing.T) {
+	configDir := filepath.Join(t.TempDir(), "claude-config")
+	stageFixtureProject(t, "project-alpha", configDir, projectAlphaPath)
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+
+	projectDir := filepath.Join(configDir, "projects", sanitizePathForTests(canonicalizePathForTests(projectAlphaPath)))
+	subagentDir := filepath.Join(projectDir, alphaMetadataSessionID, "subagents")
+	if err := os.MkdirAll(subagentDir, 0o755); err != nil {
+		t.Fatalf("failed to create subagent dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subagentDir, "agent-1.jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("failed to seed subagent transcript: %v", err)
+	}
+
+	if err := DeleteSession(alphaMetadataSessionID, SessionMutationOptions{Directory: projectAlphaPath}); err != nil {
+		t.Fatalf("DeleteSession returned error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, alphaMetadataSessionID+".jsonl")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected transcript file to be removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, alphaMetadataSessionID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected subagent directory to be removed, stat err=%v", err)
+	}
+}
+
+func TestForkSessionRemapsUUIDsAndSupportsCutoffAndTitle(t *testing.T) {
+	configDir := filepath.Join(t.TempDir(), "claude-config")
+	stageFixtureProject(t, "project-alpha", configDir, projectAlphaPath)
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+
+	result, err := ForkSession(alphaTranscriptSessionID, SessionMutationOptions{
+		Directory:     projectAlphaPath,
+		UpToMessageID: "55555555-0000-4000-8000-000000000004",
+		Title:         "Forked test title",
+	})
+	if err != nil {
+		t.Fatalf("ForkSession returned error: %v", err)
+	}
+	if result.SessionID == "" || result.SessionID == alphaTranscriptSessionID {
+		t.Fatalf("unexpected fork result: %#v", result)
+	}
+	if !regexp.MustCompile(`(?i)^[0-9a-f-]{36}$`).MatchString(result.SessionID) {
+		t.Fatalf("fork session id does not look like a UUID: %q", result.SessionID)
+	}
+
+	projectDir := filepath.Join(configDir, "projects", sanitizePathForTests(canonicalizePathForTests(projectAlphaPath)))
+	lines := readNonEmptyLines(t, filepath.Join(projectDir, result.SessionID+".jsonl"))
+	if len(lines) != 5 {
+		t.Fatalf("expected 4 copied messages plus title, got %d lines: %#v", len(lines), lines)
+	}
+	if !strings.Contains(lines[len(lines)-1], `"customTitle":"Forked test title"`) {
+		t.Fatalf("expected explicit fork title at tail, got %q", lines[len(lines)-1])
+	}
+
+	seenUUIDs := make(map[string]bool)
+	for index, line := range lines[:len(lines)-1] {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("fork line %d was not JSON: %v", index, err)
+		}
+		if entry["sessionId"] != result.SessionID {
+			t.Fatalf("fork line %d has wrong sessionId: %#v", index, entry)
+		}
+		uuid, _ := entry["uuid"].(string)
+		if strings.HasPrefix(uuid, "55555555-") {
+			t.Fatalf("fork line %d kept original uuid: %#v", index, entry)
+		}
+		if seenUUIDs[uuid] {
+			t.Fatalf("duplicate fork uuid %q", uuid)
+		}
+		seenUUIDs[uuid] = true
+		forkedFrom, ok := entry["forkedFrom"].(map[string]any)
+		if !ok || forkedFrom["sessionId"] != alphaTranscriptSessionID {
+			t.Fatalf("fork line %d missing forkedFrom metadata: %#v", index, entry)
+		}
+	}
+	if strings.Contains(strings.Join(lines, "\n"), "55555555-0000-4000-8000-000000000007") {
+		t.Fatalf("fork should have stopped at cutoff message, got lines: %#v", lines)
 	}
 }
 

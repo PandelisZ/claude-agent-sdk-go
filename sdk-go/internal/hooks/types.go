@@ -74,8 +74,15 @@ func (u PermissionUpdate) ToMap() map[string]any {
 }
 
 type ToolPermissionContext struct {
-	Signal      any
-	Suggestions []PermissionUpdate
+	Signal         any
+	Suggestions    []PermissionUpdate
+	ToolUseID      *string
+	AgentID        *string
+	BlockedPath    *string
+	DecisionReason *string
+	Title          *string
+	DisplayName    *string
+	Description    *string
 }
 
 type PermissionResult interface {

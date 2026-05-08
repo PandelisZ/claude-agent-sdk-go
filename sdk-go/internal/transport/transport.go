@@ -26,11 +26,15 @@ type PermissionMode string
 type SdkBeta string
 type SettingSource string
 type ThinkingConfigType string
+type ThinkingDisplay string
 
 const (
 	ThinkingConfigAdaptive ThinkingConfigType = "adaptive"
 	ThinkingConfigEnabled  ThinkingConfigType = "enabled"
 	ThinkingConfigDisabled ThinkingConfigType = "disabled"
+
+	ThinkingDisplaySummarized ThinkingDisplay = "summarized"
+	ThinkingDisplayOmitted    ThinkingDisplay = "omitted"
 )
 
 type ToolsPreset struct {
@@ -52,11 +56,43 @@ type SystemPromptFile struct {
 type ThinkingConfig struct {
 	Type         ThinkingConfigType
 	BudgetTokens *int
+	Display      *ThinkingDisplay
 }
 
 type SDKPluginConfig struct {
 	Type string
 	Path string
+}
+
+type TaskBudget struct {
+	Total int
+}
+
+type SandboxNetworkConfig struct {
+	AllowedDomains          []string `json:"allowedDomains,omitempty"`
+	DeniedDomains           []string `json:"deniedDomains,omitempty"`
+	AllowManagedDomainsOnly *bool    `json:"allowManagedDomainsOnly,omitempty"`
+	AllowUnixSockets        []string `json:"allowUnixSockets,omitempty"`
+	AllowAllUnixSockets     *bool    `json:"allowAllUnixSockets,omitempty"`
+	AllowLocalBinding       *bool    `json:"allowLocalBinding,omitempty"`
+	AllowMachLookup         []string `json:"allowMachLookup,omitempty"`
+	HTTPProxyPort           *int     `json:"httpProxyPort,omitempty"`
+	SOCKSProxyPort          *int     `json:"socksProxyPort,omitempty"`
+}
+
+type SandboxIgnoreViolations struct {
+	File    []string `json:"file,omitempty"`
+	Network []string `json:"network,omitempty"`
+}
+
+type SandboxSettings struct {
+	Enabled                   *bool                    `json:"enabled,omitempty"`
+	AutoAllowBashIfSandboxed  *bool                    `json:"autoAllowBashIfSandboxed,omitempty"`
+	ExcludedCommands          []string                 `json:"excludedCommands,omitempty"`
+	AllowUnsandboxedCommands  *bool                    `json:"allowUnsandboxedCommands,omitempty"`
+	Network                   *SandboxNetworkConfig    `json:"network,omitempty"`
+	IgnoreViolations          *SandboxIgnoreViolations `json:"ignoreViolations,omitempty"`
+	EnableWeakerNestedSandbox *bool                    `json:"enableWeakerNestedSandbox,omitempty"`
 }
 
 type MCPServerConfig interface{}
@@ -96,10 +132,12 @@ type Options struct {
 	PermissionMode           *PermissionMode
 	ContinueConversation     bool
 	Resume                   *string
+	SessionID                *string
 	ForkSession              bool
 	MaxTurns                 *int
 	MaxBudgetUSD             *float64
 	DisallowedTools          []string
+	TaskBudget               *TaskBudget
 	Model                    *string
 	FallbackModel            *string
 	Betas                    []SdkBeta
@@ -107,19 +145,25 @@ type Options struct {
 	Cwd                      *string
 	CLIPath                  *string
 	Settings                 *string
+	Sandbox                  *SandboxSettings
 	AddDirs                  []string
 	Env                      map[string]string
 	ExtraArgs                map[string]*string
 	MaxBufferSize            *int
+	Stderr                   func(string)
 	User                     *string
 	IncludePartialMessages   bool
+	IncludeHookEvents        bool
+	StrictMCPConfig          bool
 	SettingSources           []SettingSource
+	Skills                   any
 	Plugins                  []SDKPluginConfig
 	MaxThinkingTokens        *int
 	Thinking                 *ThinkingConfig
 	Effort                   *string
 	OutputFormat             map[string]any
 	EnableFileCheckpointing  bool
+	SessionMirror            bool
 }
 
 type CLIConnectionError struct {
@@ -294,7 +338,21 @@ func (t *SubprocessCLITransport) Connect(ctx context.Context) error {
 	t.stderrPipe = stderrPipe
 	t.stderrDone = make(chan struct{})
 	go func() {
-		_, _ = io.Copy(&t.stderrBuf, stderrPipe)
+		if t.options.Stderr == nil {
+			_, _ = io.Copy(&t.stderrBuf, stderrPipe)
+		} else {
+			scanner := bufio.NewScanner(stderrPipe)
+			scanner.Buffer(make([]byte, 0, 64*1024), t.maxBufferSize)
+			for scanner.Scan() {
+				line := scanner.Text()
+				t.stderrBuf.WriteString(line)
+				t.stderrBuf.WriteByte('\n')
+				t.options.Stderr(line + "\n")
+			}
+			if err := scanner.Err(); err != nil {
+				t.stderrBuf.WriteString(err.Error())
+			}
+		}
 		close(t.stderrDone)
 	}()
 	t.connected = true
@@ -428,11 +486,16 @@ func (t *SubprocessCLITransport) buildCommandArgs() ([]string, error) {
 		args = append(args, "--tools", strings.Join(t.options.Tools, ","))
 	}
 
-	if len(t.options.AllowedTools) > 0 {
-		args = append(args, "--allowedTools", strings.Join(t.options.AllowedTools, ","))
+	effectiveAllowedTools, effectiveSettingSources := applySkillsDefaults(t.options.AllowedTools, t.options.SettingSources, t.options.Skills)
+
+	if len(effectiveAllowedTools) > 0 {
+		args = append(args, "--allowedTools", strings.Join(effectiveAllowedTools, ","))
 	}
 	if len(t.options.DisallowedTools) > 0 {
 		args = append(args, "--disallowedTools", strings.Join(t.options.DisallowedTools, ","))
+	}
+	if t.options.TaskBudget != nil {
+		args = append(args, "--task-budget", strconv.Itoa(t.options.TaskBudget.Total))
 	}
 	if t.options.MaxTurns != nil {
 		args = append(args, "--max-turns", strconv.Itoa(*t.options.MaxTurns))
@@ -465,8 +528,15 @@ func (t *SubprocessCLITransport) buildCommandArgs() ([]string, error) {
 	if t.options.Resume != nil {
 		args = append(args, "--resume", *t.options.Resume)
 	}
-	if t.options.Settings != nil {
-		args = append(args, "--settings", *t.options.Settings)
+	if t.options.SessionID != nil {
+		args = append(args, "--session-id", *t.options.SessionID)
+	}
+	settingsValue, err := buildSettingsValue(t.options.Settings, t.options.Sandbox)
+	if err != nil {
+		return nil, err
+	}
+	if settingsValue != "" {
+		args = append(args, "--settings", settingsValue)
 	}
 	for _, dir := range t.options.AddDirs {
 		args = append(args, "--add-dir", dir)
@@ -481,11 +551,22 @@ func (t *SubprocessCLITransport) buildCommandArgs() ([]string, error) {
 	if t.options.IncludePartialMessages {
 		args = append(args, "--include-partial-messages")
 	}
+	if t.options.IncludeHookEvents {
+		args = append(args, "--include-hook-events")
+	}
+	if t.options.StrictMCPConfig {
+		args = append(args, "--strict-mcp-config")
+	}
 	if t.options.ForkSession {
 		args = append(args, "--fork-session")
 	}
+	if t.options.SessionMirror {
+		args = append(args, "--session-mirror")
+	}
 
-	args = append(args, "--setting-sources", joinSettingSources(t.options.SettingSources))
+	if effectiveSettingSources != nil {
+		args = append(args, "--setting-sources", joinSettingSources(effectiveSettingSources))
+	}
 
 	for _, plugin := range t.options.Plugins {
 		if plugin.Path == "" {
@@ -496,8 +577,9 @@ func (t *SubprocessCLITransport) buildCommandArgs() ([]string, error) {
 
 	args = append(args, buildExtraArgs(t.options.ExtraArgs)...)
 
-	if maxThinkingTokens := resolveMaxThinkingTokens(t.options); maxThinkingTokens != nil {
-		args = append(args, "--max-thinking-tokens", strconv.Itoa(*maxThinkingTokens))
+	args = append(args, buildThinkingArgs(t.options)...)
+	if t.options.Thinking == nil && t.options.MaxThinkingTokens != nil {
+		args = append(args, "--max-thinking-tokens", strconv.Itoa(*t.options.MaxThinkingTokens))
 	}
 	if t.options.Effort != nil {
 		args = append(args, "--effort", *t.options.Effort)
@@ -647,6 +729,88 @@ func serializeMCPServers(servers map[string]MCPServerConfig) (string, error) {
 	return string(encoded), nil
 }
 
+func buildSettingsValue(settings *string, sandbox *SandboxSettings) (string, error) {
+	if settings == nil && sandbox == nil {
+		return "", nil
+	}
+	if sandbox == nil {
+		return *settings, nil
+	}
+
+	settingsObj := make(map[string]any)
+	if settings != nil {
+		parsed, err := readSettingsObject(*settings)
+		if err != nil {
+			return "", err
+		}
+		settingsObj = parsed
+	}
+
+	settingsObj["sandbox"] = sandbox
+	encoded, err := json.Marshal(settingsObj)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+func readSettingsObject(value string) (map[string]any, error) {
+	settingsObj := make(map[string]any)
+	trimmed := strings.TrimSpace(value)
+
+	if strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}") {
+		if err := json.Unmarshal([]byte(trimmed), &settingsObj); err == nil {
+			return settingsObj, nil
+		}
+	}
+
+	content, err := os.ReadFile(trimmed)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return settingsObj, nil
+		}
+		return nil, err
+	}
+	if err := json.Unmarshal(content, &settingsObj); err != nil {
+		return nil, err
+	}
+	return settingsObj, nil
+}
+
+func applySkillsDefaults(allowedTools []string, settingSources []SettingSource, skills any) ([]string, []SettingSource) {
+	effectiveAllowedTools := append([]string(nil), allowedTools...)
+
+	var effectiveSettingSources []SettingSource
+	if settingSources != nil {
+		effectiveSettingSources = make([]SettingSource, len(settingSources))
+		copy(effectiveSettingSources, settingSources)
+	}
+
+	if skills == nil {
+		return effectiveAllowedTools, effectiveSettingSources
+	}
+
+	switch typed := skills.(type) {
+	case string:
+		if typed == "all" && !containsString(effectiveAllowedTools, "Skill") {
+			effectiveAllowedTools = append(effectiveAllowedTools, "Skill")
+		}
+	case []string:
+		for _, name := range typed {
+			tool := "Skill(" + name + ")"
+			if !containsString(effectiveAllowedTools, tool) {
+				effectiveAllowedTools = append(effectiveAllowedTools, tool)
+			}
+		}
+	}
+
+	if settingSources == nil {
+		effectiveSettingSources = []SettingSource{SettingSource("user"), SettingSource("project")}
+	}
+
+	return effectiveAllowedTools, effectiveSettingSources
+}
+
 func joinSettingSources(sources []SettingSource) string {
 	if len(sources) == 0 {
 		return ""
@@ -657,6 +821,41 @@ func joinSettingSources(sources []SettingSource) string {
 		values = append(values, string(source))
 	}
 	return strings.Join(values, ",")
+}
+
+func buildThinkingArgs(options Options) []string {
+	if options.Thinking == nil {
+		return nil
+	}
+
+	args := make([]string, 0, 4)
+	switch options.Thinking.Type {
+	case ThinkingConfigAdaptive:
+		args = append(args, "--thinking", "adaptive")
+	case ThinkingConfigEnabled:
+		if options.Thinking.BudgetTokens != nil {
+			args = append(args, "--max-thinking-tokens", strconv.Itoa(*options.Thinking.BudgetTokens))
+		}
+	case ThinkingConfigDisabled:
+		args = append(args, "--thinking", "disabled")
+	default:
+		return nil
+	}
+
+	if options.Thinking.Type != ThinkingConfigDisabled && options.Thinking.Display != nil {
+		args = append(args, "--thinking-display", string(*options.Thinking.Display))
+	}
+
+	return args
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func buildExtraArgs(extraArgs map[string]*string) []string {
@@ -678,28 +877,6 @@ func buildExtraArgs(extraArgs map[string]*string) []string {
 		}
 	}
 	return args
-}
-
-func resolveMaxThinkingTokens(options Options) *int {
-	if options.Thinking == nil {
-		return options.MaxThinkingTokens
-	}
-
-	switch options.Thinking.Type {
-	case ThinkingConfigAdaptive:
-		if options.MaxThinkingTokens != nil {
-			return options.MaxThinkingTokens
-		}
-		value := 32000
-		return &value
-	case ThinkingConfigEnabled:
-		return options.Thinking.BudgetTokens
-	case ThinkingConfigDisabled:
-		value := 0
-		return &value
-	default:
-		return options.MaxThinkingTokens
-	}
 }
 
 func extractJSONSchema(outputFormat map[string]any) string {

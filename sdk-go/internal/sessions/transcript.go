@@ -2,6 +2,9 @@ package sessions
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 )
 
 var transcriptEntryTypes = map[string]struct{}{
@@ -205,4 +208,182 @@ func GetSessionMessages(sessionID string, directory string, limit int, offset in
 		return visible[offset : offset+limit], nil
 	}
 	return visible[offset:], nil
+}
+
+type subagentFile struct {
+	agentID string
+	path    string
+}
+
+func resolveSessionFilePath(sessionID string, directory string) string {
+	fileName := sessionID + ".jsonl"
+	if directory != "" {
+		canonicalDir := canonicalizePath(directory)
+		if projectDir, ok := findProjectDir(canonicalDir); ok {
+			path := filepath.Join(projectDir, fileName)
+			if info, err := os.Stat(path); err == nil && !info.IsDir() {
+				return path
+			}
+		}
+		for _, worktree := range getWorktreePaths(canonicalDir) {
+			if worktree == canonicalDir {
+				continue
+			}
+			if projectDir, ok := findProjectDir(worktree); ok {
+				path := filepath.Join(projectDir, fileName)
+				if info, err := os.Stat(path); err == nil && !info.IsDir() {
+					return path
+				}
+			}
+		}
+		return ""
+	}
+
+	entries, err := os.ReadDir(getProjectsDir())
+	if err != nil {
+		return ""
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		path := filepath.Join(getProjectsDir(), entry.Name(), fileName)
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path
+		}
+	}
+	return ""
+}
+
+func resolveSubagentsDir(sessionID string, directory string) string {
+	sessionFile := resolveSessionFilePath(sessionID, directory)
+	if sessionFile == "" {
+		return ""
+	}
+	return filepath.Join(strings.TrimSuffix(sessionFile, ".jsonl"), "subagents")
+}
+
+func collectAgentFiles(baseDir string) []subagentFile {
+	files := make([]subagentFile, 0)
+	_ = filepath.WalkDir(baseDir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return nil
+		}
+		name := entry.Name()
+		if !strings.HasPrefix(name, "agent-") || !strings.HasSuffix(name, ".jsonl") {
+			return nil
+		}
+		files = append(files, subagentFile{
+			agentID: strings.TrimSuffix(strings.TrimPrefix(name, "agent-"), ".jsonl"),
+			path:    path,
+		})
+		return nil
+	})
+	return files
+}
+
+func buildSubagentChain(entries []transcriptEntry) []transcriptEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	byUUID := make(map[string]transcriptEntry, len(entries))
+	for _, entry := range entries {
+		byUUID[entry.UUID] = entry
+	}
+
+	var leaf transcriptEntry
+	found := false
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Type == "user" || entries[i].Type == "assistant" {
+			leaf = entries[i]
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil
+	}
+
+	chain := make([]transcriptEntry, 0, len(entries))
+	current := leaf
+	seen := map[string]struct{}{}
+	for current.UUID != "" {
+		if _, ok := seen[current.UUID]; ok {
+			break
+		}
+		seen[current.UUID] = struct{}{}
+		chain = append(chain, current)
+		if current.ParentUUID == "" {
+			break
+		}
+		parent, ok := byUUID[current.ParentUUID]
+		if !ok {
+			break
+		}
+		current = parent
+	}
+	for i, j := 0, len(chain)-1; i < j; i, j = i+1, j-1 {
+		chain[i], chain[j] = chain[j], chain[i]
+	}
+	return chain
+}
+
+func ListSubagents(sessionID string, directory string) ([]string, error) {
+	if !validateUUID(sessionID) {
+		return []string{}, nil
+	}
+	subagentsDir := resolveSubagentsDir(sessionID, directory)
+	if subagentsDir == "" {
+		return []string{}, nil
+	}
+	files := collectAgentFiles(subagentsDir)
+	agents := make([]string, 0, len(files))
+	for _, file := range files {
+		agents = append(agents, file.agentID)
+	}
+	return agents, nil
+}
+
+func GetSubagentMessages(sessionID string, agentID string, directory string, limit int, offset int) ([]SessionMessage, error) {
+	if !validateUUID(sessionID) || agentID == "" {
+		return []SessionMessage{}, nil
+	}
+	subagentsDir := resolveSubagentsDir(sessionID, directory)
+	if subagentsDir == "" {
+		return []SessionMessage{}, nil
+	}
+
+	var transcriptPath string
+	for _, file := range collectAgentFiles(subagentsDir) {
+		if file.agentID == agentID {
+			transcriptPath = file.path
+			break
+		}
+	}
+	if transcriptPath == "" {
+		return []SessionMessage{}, nil
+	}
+	content, err := os.ReadFile(transcriptPath)
+	if err != nil || len(content) == 0 {
+		return []SessionMessage{}, err
+	}
+
+	entries := parseTranscriptEntries(content)
+	chain := buildSubagentChain(entries)
+	messages := make([]SessionMessage, 0, len(chain))
+	for _, entry := range chain {
+		if entry.Type == "user" || entry.Type == "assistant" {
+			messages = append(messages, toSessionMessage(entry))
+		}
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(messages) {
+		return []SessionMessage{}, nil
+	}
+	if limit > 0 && offset+limit < len(messages) {
+		return messages[offset : offset+limit], nil
+	}
+	return messages[offset:], nil
 }

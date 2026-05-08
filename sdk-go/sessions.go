@@ -35,6 +35,7 @@ type SessionMessage struct {
 type ListSessionsOptions struct {
 	Directory        string
 	Limit            int
+	Offset           int
 	IncludeWorktrees *bool
 }
 
@@ -45,7 +46,9 @@ type SessionQueryOptions struct {
 }
 
 type SessionMutationOptions struct {
-	Directory string
+	Directory     string
+	UpToMessageID string
+	Title         string
 }
 
 func ListSessions(options ListSessionsOptions) ([]SDKSessionInfo, error) {
@@ -57,7 +60,7 @@ func ListSessions(options ListSessionsOptions) ([]SDKSessionInfo, error) {
 		}
 	}
 
-	sessions, err := internalsessions.ListSessions(options.Directory, options.Limit, includeWorktrees)
+	sessions, err := internalsessions.ListSessions(options.Directory, options.Limit, options.Offset, includeWorktrees)
 	if err != nil {
 		return nil, err
 	}
@@ -102,6 +105,49 @@ func TagSession(sessionID string, tag *string, options SessionMutationOptions) e
 		return fmt.Errorf("invalid session ID %q", sessionID)
 	}
 	return internalsessions.TagSession(sessionID, tag, options.Directory)
+}
+
+func DeleteSession(sessionID string, options SessionMutationOptions) error {
+	if !isValidSessionUUID(sessionID) {
+		return fmt.Errorf("invalid session ID %q", sessionID)
+	}
+	return internalsessions.DeleteSession(sessionID, options.Directory)
+}
+
+type ForkSessionResult struct {
+	SessionID string
+}
+
+func ForkSession(sessionID string, options SessionMutationOptions) (ForkSessionResult, error) {
+	if !isValidSessionUUID(sessionID) {
+		return ForkSessionResult{}, fmt.Errorf("invalid session ID %q", sessionID)
+	}
+	if options.UpToMessageID != "" && !isValidSessionUUID(options.UpToMessageID) {
+		return ForkSessionResult{}, fmt.Errorf("invalid up_to_message_id %q", options.UpToMessageID)
+	}
+	result, err := internalsessions.ForkSession(sessionID, options.Directory, options.UpToMessageID, options.Title)
+	if err != nil {
+		return ForkSessionResult{}, err
+	}
+	return ForkSessionResult{SessionID: result.SessionID}, nil
+}
+
+func ListSubagents(sessionID string, options SessionQueryOptions) ([]string, error) {
+	if !isValidSessionUUID(sessionID) {
+		return nil, fmt.Errorf("invalid session ID %q", sessionID)
+	}
+	return internalsessions.ListSubagents(sessionID, options.Directory)
+}
+
+func GetSubagentMessages(sessionID string, agentID string, options SessionQueryOptions) ([]SessionMessage, error) {
+	if !isValidSessionUUID(sessionID) {
+		return nil, fmt.Errorf("invalid session ID %q", sessionID)
+	}
+	messages, err := internalsessions.GetSubagentMessages(sessionID, agentID, options.Directory, options.Limit, options.Offset)
+	if err != nil {
+		return nil, err
+	}
+	return convertSessionMessages(messages), nil
 }
 
 func isValidSessionUUID(value string) bool {

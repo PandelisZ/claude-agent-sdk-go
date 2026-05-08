@@ -221,6 +221,19 @@ func parseSystemMessage(payload map[string]any) (claudeagentsdk.Message, error) 
 			ToolUseID:     optionalString(payload, "tool_use_id"),
 			Usage:         usage,
 		}, nil
+	case "mirror_error":
+		return &claudeagentsdk.MirrorErrorMessage{
+			SystemMessage: base,
+			Key:           parseSessionKey(payload["key"]),
+			Error:         stringValueOrEmpty(payload, "error"),
+		}, nil
+	case "hook_started", "hook_response":
+		return &claudeagentsdk.HookEventMessage{
+			SystemMessage: base,
+			HookEventName: firstStringValue(payload, "hook_event", "hook_name", "hook_event_name"),
+			SessionID:     optionalString(payload, "session_id"),
+			UUID:          optionalString(payload, "uuid"),
+		}, nil
 	default:
 		return &base, nil
 	}
@@ -231,22 +244,10 @@ func parseResultMessage(payload map[string]any) (claudeagentsdk.Message, error) 
 	if err != nil {
 		return nil, claudeagentsdk.NewMessageParseError("missing required field in result message: 'subtype'", payload)
 	}
-	durationMS, err := requiredInt(payload, "duration_ms", "result message")
-	if err != nil {
-		return nil, err
-	}
-	durationAPIMS, err := requiredInt(payload, "duration_api_ms", "result message")
-	if err != nil {
-		return nil, err
-	}
-	isError, ok := protocol.BoolValue(payload, "is_error")
-	if !ok || isError == nil {
-		return nil, claudeagentsdk.NewMessageParseError("missing required field in result message: 'is_error'", payload)
-	}
-	numTurns, err := requiredInt(payload, "num_turns", "result message")
-	if err != nil {
-		return nil, err
-	}
+	durationMS := optionalIntValue(payload, "duration_ms")
+	durationAPIMS := optionalIntValue(payload, "duration_api_ms")
+	isError := optionalBoolValue(payload, "is_error")
+	numTurns := optionalIntValue(payload, "num_turns")
 	sessionID, err := protocol.RequireString(payload, "session_id")
 	if err != nil {
 		return nil, claudeagentsdk.NewMessageParseError("missing required field in result message: 'session_id'", payload)
@@ -257,7 +258,7 @@ func parseResultMessage(payload map[string]any) (claudeagentsdk.Message, error) 
 		Subtype:           subtype,
 		DurationMS:        durationMS,
 		DurationAPIMS:     durationAPIMS,
-		IsError:           *isError,
+		IsError:           isError,
 		NumTurns:          numTurns,
 		SessionID:         sessionID,
 		StopReason:        optionalString(payload, "stop_reason"),
@@ -267,6 +268,9 @@ func parseResultMessage(payload map[string]any) (claudeagentsdk.Message, error) 
 		StructuredOutput:  payload["structured_output"],
 		ModelUsage:        optionalMap(payload, "modelUsage"),
 		PermissionDenials: optionalSlice(payload, "permission_denials"),
+		DeferredToolUse:   parseDeferredToolUse(payload["deferred_tool_use"]),
+		Errors:            optionalStringSlice(payload, "errors"),
+		APIErrorStatus:    optionalIntPtr(payload, "api_error_status"),
 		UUID:              optionalString(payload, "uuid"),
 	}, nil
 }
@@ -400,6 +404,37 @@ func parseContentBlocks(items []any) ([]claudeagentsdk.ContentBlock, error) {
 				block.IsError = isError
 			}
 			blocks = append(blocks, block)
+		case "server_tool_use":
+			id, err := protocol.RequireString(raw, "id")
+			if err != nil {
+				return nil, fmt.Errorf("server_tool_use block missing 'id'")
+			}
+			name, err := protocol.RequireString(raw, "name")
+			if err != nil {
+				return nil, fmt.Errorf("server_tool_use block missing 'name'")
+			}
+			input, err := protocol.RequireMap(raw, "input")
+			if err != nil {
+				return nil, fmt.Errorf("server_tool_use block missing 'input'")
+			}
+			blocks = append(blocks, claudeagentsdk.ServerToolUseBlock{
+				ID:    id,
+				Name:  claudeagentsdk.ServerToolName(name),
+				Input: input,
+			})
+		case "advisor_tool_result", "server_tool_result":
+			toolUseID, err := protocol.RequireString(raw, "tool_use_id")
+			if err != nil {
+				return nil, fmt.Errorf("%s block missing 'tool_use_id'", blockType)
+			}
+			content, err := protocol.RequireMap(raw, "content")
+			if err != nil {
+				return nil, fmt.Errorf("%s block missing 'content'", blockType)
+			}
+			blocks = append(blocks, claudeagentsdk.ServerToolResultBlock{
+				ToolUseID: toolUseID,
+				Content:   content,
+			})
 		default:
 			blocks = append(blocks, claudeagentsdk.UnknownContentBlock{
 				Type: blockType,
@@ -488,6 +523,22 @@ func optionalString(payload map[string]any, key string) *string {
 	return nil
 }
 
+func firstStringValue(payload map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := protocol.StringValue(payload, key); ok {
+			return value
+		}
+	}
+	return ""
+}
+
+func stringValueOrEmpty(payload map[string]any, key string) string {
+	if value, ok := protocol.StringValue(payload, key); ok {
+		return value
+	}
+	return ""
+}
+
 func optionalMap(payload map[string]any, key string) map[string]any {
 	if value, ok := protocol.MapValue(payload, key); ok {
 		return value
@@ -509,9 +560,76 @@ func optionalInt64(payload map[string]any, key string) *int64 {
 	return nil
 }
 
+func optionalIntPtr(payload map[string]any, key string) *int {
+	if value, ok := protocol.IntValue(payload, key); ok {
+		return value
+	}
+	return nil
+}
+
+func optionalIntValue(payload map[string]any, key string) int {
+	if value, ok := protocol.IntValue(payload, key); ok && value != nil {
+		return *value
+	}
+	return 0
+}
+
+func optionalBoolValue(payload map[string]any, key string) bool {
+	if value, ok := protocol.BoolValue(payload, key); ok && value != nil {
+		return *value
+	}
+	return false
+}
+
 func optionalSlice(payload map[string]any, key string) []any {
 	if value, ok := protocol.SliceValue(payload, key); ok {
 		return value
 	}
 	return nil
+}
+
+func optionalStringSlice(payload map[string]any, key string) []string {
+	items, ok := protocol.SliceValue(payload, key)
+	if !ok {
+		return nil
+	}
+	values := make([]string, 0, len(items))
+	for _, item := range items {
+		if value, ok := item.(string); ok {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
+func parseDeferredToolUse(raw any) *claudeagentsdk.DeferredToolUse {
+	payload, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	id, _ := protocol.StringValue(payload, "id")
+	name, _ := protocol.StringValue(payload, "name")
+	input, _ := protocol.MapValue(payload, "input")
+	return &claudeagentsdk.DeferredToolUse{
+		ID:    id,
+		Name:  name,
+		Input: input,
+	}
+}
+
+func parseSessionKey(raw any) *claudeagentsdk.SessionKey {
+	payload, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	projectKey, _ := protocol.StringValue(payload, "project_key")
+	sessionID, _ := protocol.StringValue(payload, "session_id")
+	key := &claudeagentsdk.SessionKey{
+		ProjectKey: projectKey,
+		SessionID:  sessionID,
+	}
+	if subpath, ok := protocol.StringValue(payload, "subpath"); ok {
+		key.Subpath = &subpath
+	}
+	return key
 }

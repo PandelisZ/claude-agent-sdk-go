@@ -8,6 +8,8 @@ const (
 	PermissionModeAcceptEdits       PermissionMode = "acceptEdits"
 	PermissionModePlan              PermissionMode = "plan"
 	PermissionModeBypassPermissions PermissionMode = "bypassPermissions"
+	PermissionModeDontAsk           PermissionMode = "dontAsk"
+	PermissionModeAuto              PermissionMode = "auto"
 )
 
 // SdkBeta identifies a CLI beta feature flag.
@@ -34,15 +36,21 @@ type ToolsPreset struct {
 
 // SystemPromptPreset configures a built-in system prompt preset.
 type SystemPromptPreset struct {
-	Type   string  `json:"type"`
-	Preset string  `json:"preset"`
-	Append *string `json:"append,omitempty"`
+	Type                   string  `json:"type"`
+	Preset                 string  `json:"preset"`
+	Append                 *string `json:"append,omitempty"`
+	ExcludeDynamicSections *bool   `json:"exclude_dynamic_sections,omitempty"`
 }
 
 // SystemPromptFile configures a system prompt loaded from disk.
 type SystemPromptFile struct {
 	Type string `json:"type"`
 	Path string `json:"path"`
+}
+
+// TaskBudget configures the API-side task budget in tokens.
+type TaskBudget struct {
+	Total int `json:"total"`
 }
 
 // ThinkingConfigType controls extended thinking behavior.
@@ -54,11 +62,83 @@ const (
 	ThinkingConfigDisabled ThinkingConfigType = "disabled"
 )
 
+// ThinkingDisplay controls whether thinking text is returned or omitted.
+type ThinkingDisplay string
+
+const (
+	ThinkingDisplaySummarized ThinkingDisplay = "summarized"
+	ThinkingDisplayOmitted    ThinkingDisplay = "omitted"
+)
+
 // ThinkingConfig matches the Python SDK's tagged thinking configuration.
 type ThinkingConfig struct {
 	Type         ThinkingConfigType `json:"type"`
 	BudgetTokens *int               `json:"budget_tokens,omitempty"`
+	Display      *ThinkingDisplay   `json:"display,omitempty"`
 }
+
+// AgentDefinition configures a custom sub-agent invokable through the Agent tool.
+type AgentDefinition struct {
+	Description     string          `json:"description"`
+	Prompt          string          `json:"prompt"`
+	Tools           []string        `json:"tools,omitempty"`
+	DisallowedTools []string        `json:"disallowedTools,omitempty"`
+	Model           *string         `json:"model,omitempty"`
+	Skills          []string        `json:"skills,omitempty"`
+	Memory          *string         `json:"memory,omitempty"`
+	MCPServers      []any           `json:"mcpServers,omitempty"`
+	InitialPrompt   *string         `json:"initialPrompt,omitempty"`
+	MaxTurns        *int            `json:"maxTurns,omitempty"`
+	Background      *bool           `json:"background,omitempty"`
+	Effort          any             `json:"effort,omitempty"`
+	PermissionMode  *PermissionMode `json:"permissionMode,omitempty"`
+}
+
+// SandboxNetworkConfig configures network behavior inside the CLI sandbox.
+type SandboxNetworkConfig struct {
+	AllowedDomains          []string `json:"allowedDomains,omitempty"`
+	DeniedDomains           []string `json:"deniedDomains,omitempty"`
+	AllowManagedDomainsOnly *bool    `json:"allowManagedDomainsOnly,omitempty"`
+	AllowUnixSockets        []string `json:"allowUnixSockets,omitempty"`
+	AllowAllUnixSockets     *bool    `json:"allowAllUnixSockets,omitempty"`
+	AllowLocalBinding       *bool    `json:"allowLocalBinding,omitempty"`
+	AllowMachLookup         []string `json:"allowMachLookup,omitempty"`
+	HTTPProxyPort           *int     `json:"httpProxyPort,omitempty"`
+	SOCKSProxyPort          *int     `json:"socksProxyPort,omitempty"`
+
+	// Allow is kept as a Go-friendly shorthand used by earlier compatibility
+	// tests; AllowedDomains mirrors the upstream Python field.
+	Allow []string `json:"allow,omitempty"`
+}
+
+// SandboxIgnoreViolations configures sandbox violations that should be ignored.
+type SandboxIgnoreViolations struct {
+	File    []string `json:"file,omitempty"`
+	Network []string `json:"network,omitempty"`
+
+	// Read is kept as a Go-friendly shorthand used by earlier compatibility
+	// tests; File mirrors the upstream Python field.
+	Read []string `json:"read,omitempty"`
+}
+
+// SandboxSettings configures CLI command sandboxing.
+type SandboxSettings struct {
+	Enabled                   *bool                    `json:"enabled,omitempty"`
+	AutoAllowBashIfSandboxed  *bool                    `json:"autoAllowBashIfSandboxed,omitempty"`
+	ExcludedCommands          []string                 `json:"excludedCommands,omitempty"`
+	AllowUnsandboxedCommands  *bool                    `json:"allowUnsandboxedCommands,omitempty"`
+	Network                   *SandboxNetworkConfig    `json:"network,omitempty"`
+	IgnoreViolations          *SandboxIgnoreViolations `json:"ignoreViolations,omitempty"`
+	EnableWeakerNestedSandbox *bool                    `json:"enableWeakerNestedSandbox,omitempty"`
+}
+
+// SessionStoreFlushMode controls when transcript mirror entries are flushed.
+type SessionStoreFlushMode string
+
+const (
+	SessionStoreFlushModeBatched SessionStoreFlushMode = "batched"
+	SessionStoreFlushModeEager   SessionStoreFlushMode = "eager"
+)
 
 // SDKPluginConfig configures a local SDK plugin.
 type SDKPluginConfig struct {
@@ -205,9 +285,11 @@ type ClaudeAgentOptions struct {
 	SystemPromptPreset       *SystemPromptPreset
 	SystemPromptFile         *SystemPromptFile
 	MCPServers               map[string]MCPServerConfig
+	StrictMCPConfig          bool
 	PermissionMode           *PermissionMode
 	ContinueConversation     bool
 	Resume                   *string
+	SessionID                *string
 	ForkSession              bool
 	MaxTurns                 *int
 	MaxBudgetUSD             *float64
@@ -223,15 +305,27 @@ type ClaudeAgentOptions struct {
 	Env                      map[string]string
 	ExtraArgs                map[string]*string
 	MaxBufferSize            *int
+	DebugStderr              any
+	Stderr                   func(string)
+	CanUseTool               CanUseToolCallback
+	Hooks                    map[HookEvent][]HookMatcher
 	User                     *string
 	IncludePartialMessages   bool
+	IncludeHookEvents        bool
 	SettingSources           []SettingSource
+	Skills                   []string
+	Agents                   map[string]AgentDefinition
+	Sandbox                  *SandboxSettings
 	Plugins                  []SDKPluginConfig
 	MaxThinkingTokens        *int
 	Thinking                 *ThinkingConfig
 	Effort                   *string
 	OutputFormat             map[string]any
 	EnableFileCheckpointing  bool
+	SessionStore             SessionStore
+	SessionStoreFlush        SessionStoreFlushMode
+	LoadTimeoutMS            int
+	TaskBudget               *TaskBudget
 }
 
 // ContentBlock represents an assistant or user content block.
@@ -271,6 +365,37 @@ type ToolResultBlock struct {
 }
 
 func (ToolResultBlock) ContentBlockType() string { return "tool_result" }
+
+// ServerToolName identifies an API-executed server-side tool.
+type ServerToolName string
+
+const (
+	ServerToolNameAdvisor                 ServerToolName = "advisor"
+	ServerToolNameWebSearch               ServerToolName = "web_search"
+	ServerToolNameWebFetch                ServerToolName = "web_fetch"
+	ServerToolNameCodeExecution           ServerToolName = "code_execution"
+	ServerToolNameBashCodeExecution       ServerToolName = "bash_code_execution"
+	ServerToolNameTextEditorCodeExecution ServerToolName = "text_editor_code_execution"
+	ServerToolNameToolSearchToolRegex     ServerToolName = "tool_search_tool_regex"
+	ServerToolNameToolSearchToolBM25      ServerToolName = "tool_search_tool_bm25"
+)
+
+// ServerToolUseBlock is a server-side tool call emitted by the API.
+type ServerToolUseBlock struct {
+	ID    string
+	Name  ServerToolName
+	Input map[string]any
+}
+
+func (ServerToolUseBlock) ContentBlockType() string { return "server_tool_use" }
+
+// ServerToolResultBlock is the result for an API-executed server-side tool.
+type ServerToolResultBlock struct {
+	ToolUseID string
+	Content   map[string]any
+}
+
+func (ServerToolResultBlock) ContentBlockType() string { return "server_tool_result" }
 
 // UnknownContentBlock preserves a forward-compatible block payload.
 type UnknownContentBlock struct {
@@ -397,6 +522,35 @@ type TaskNotificationMessage struct {
 	Usage      *TaskUsage
 }
 
+// SessionKey identifies a main or sub-agent transcript in a session store.
+type SessionKey struct {
+	ProjectKey string
+	SessionID  string
+	Subpath    *string
+}
+
+// MirrorErrorMessage is emitted when mirroring to a session store fails.
+type MirrorErrorMessage struct {
+	SystemMessage
+	Key   *SessionKey
+	Error string
+}
+
+// HookEventMessage is emitted when include_hook_events is enabled.
+type HookEventMessage struct {
+	SystemMessage
+	HookEventName string
+	SessionID     *string
+	UUID          *string
+}
+
+// DeferredToolUse is a tool call deferred by a hook decision.
+type DeferredToolUse struct {
+	ID    string
+	Name  string
+	Input map[string]any
+}
+
 // ResultMessage is the final result payload for a session.
 type ResultMessage struct {
 	Subtype           string
@@ -412,6 +566,9 @@ type ResultMessage struct {
 	StructuredOutput  any
 	ModelUsage        map[string]any
 	PermissionDenials []any
+	DeferredToolUse   *DeferredToolUse
+	Errors            []string
+	APIErrorStatus    *int
 	UUID              *string
 }
 
@@ -468,6 +625,37 @@ type RateLimitEvent struct {
 }
 
 func (*RateLimitEvent) MessageType() string { return "rate_limit_event" }
+
+// ContextUsageCategory is a single context-window usage category.
+type ContextUsageCategory struct {
+	Name       string
+	Tokens     int
+	Color      string
+	IsDeferred *bool
+}
+
+// ContextUsageResponse reports current context window usage.
+type ContextUsageResponse struct {
+	Categories           []ContextUsageCategory
+	TotalTokens          int
+	MaxTokens            int
+	RawMaxTokens         int
+	Percentage           float64
+	Model                string
+	IsAutoCompactEnabled bool
+	MemoryFiles          []map[string]any
+	MCPTools             []map[string]any
+	Agents               []map[string]any
+	GridRows             [][]map[string]any
+	AutoCompactThreshold *int
+	DeferredBuiltinTools []map[string]any
+	SystemTools          []map[string]any
+	SystemPromptSections []map[string]any
+	SlashCommands        map[string]any
+	Skills               map[string]any
+	MessageBreakdown     map[string]any
+	APIUsage             map[string]any
+}
 
 // UnknownMessage preserves a forward-compatible top-level message payload.
 type UnknownMessage struct {

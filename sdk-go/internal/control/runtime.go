@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,11 +20,14 @@ import (
 type MCPHandler func(context.Context, map[string]any) (map[string]any, error)
 
 type Options struct {
-	Transport         internaltransport.Transport
-	InitializeTimeout time.Duration
-	PermissionHandler hooks.PermissionHandler
-	HookRegistry      *hooks.Registry
-	MCPHandlers       map[string]MCPHandler
+	Transport              internaltransport.Transport
+	InitializeTimeout      time.Duration
+	PermissionHandler      hooks.PermissionHandler
+	HookRegistry           *hooks.Registry
+	MCPHandlers            map[string]MCPHandler
+	InitializeAgents       map[string]any
+	InitializeSkills       []string
+	ExcludeDynamicSections *bool
 }
 
 type RequestError struct {
@@ -42,11 +46,14 @@ func (e *RequestError) Error() string {
 }
 
 type Runtime struct {
-	transport         internaltransport.Transport
-	initializeTimeout time.Duration
-	permissionHandler hooks.PermissionHandler
-	hookRegistry      *hooks.Registry
-	mcpHandlers       map[string]MCPHandler
+	transport              internaltransport.Transport
+	initializeTimeout      time.Duration
+	permissionHandler      hooks.PermissionHandler
+	hookRegistry           *hooks.Registry
+	mcpHandlers            map[string]MCPHandler
+	initializeAgents       map[string]any
+	initializeSkills       []string
+	excludeDynamicSections *bool
 
 	writeMu sync.Mutex
 
@@ -87,14 +94,17 @@ func NewRuntime(options Options) *Runtime {
 	}
 
 	return &Runtime{
-		transport:         options.Transport,
-		initializeTimeout: initializeTimeout,
-		permissionHandler: options.PermissionHandler,
-		hookRegistry:      options.HookRegistry,
-		mcpHandlers:       mcpHandlers,
-		messages:          make(chan []byte, 100),
-		done:              make(chan struct{}),
-		pending:           make(map[string]chan controlResult),
+		transport:              options.Transport,
+		initializeTimeout:      initializeTimeout,
+		permissionHandler:      options.PermissionHandler,
+		hookRegistry:           options.HookRegistry,
+		mcpHandlers:            mcpHandlers,
+		initializeAgents:       cloneMap(options.InitializeAgents),
+		initializeSkills:       append([]string(nil), options.InitializeSkills...),
+		excludeDynamicSections: cloneBoolPtr(options.ExcludeDynamicSections),
+		messages:               make(chan []byte, 100),
+		done:                   make(chan struct{}),
+		pending:                make(map[string]chan controlResult),
 	}
 }
 
@@ -131,6 +141,15 @@ func (r *Runtime) Connect(ctx context.Context) error {
 	}
 	if config := r.hookRegistry.InitializeConfig(); len(config) > 0 {
 		request["hooks"] = config
+	}
+	if len(r.initializeAgents) > 0 {
+		request["agents"] = cloneMap(r.initializeAgents)
+	}
+	if r.excludeDynamicSections != nil {
+		request["excludeDynamicSections"] = *r.excludeDynamicSections
+	}
+	if r.initializeSkills != nil {
+		request["skills"] = append([]string(nil), r.initializeSkills...)
 	}
 
 	response, err := r.SendControl(ctx, request, r.initializeTimeout)
@@ -368,10 +387,8 @@ func (r *Runtime) handlePermissionRequest(ctx context.Context, request map[strin
 		return nil, err
 	}
 
-	result, err := r.permissionHandler(ctx, toolName, cloneMap(input), hooks.ToolPermissionContext{
-		Signal:      nil,
-		Suggestions: suggestions,
-	})
+	permissionCtx := buildToolPermissionContext(request, suggestions)
+	result, err := r.permissionHandler(ctx, toolName, cloneMap(input), permissionCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -552,6 +569,72 @@ func cloneMap(input map[string]any) map[string]any {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func cloneBoolPtr(input *bool) *bool {
+	if input == nil {
+		return nil
+	}
+	value := *input
+	return &value
+}
+
+func buildToolPermissionContext(request map[string]any, suggestions []hooks.PermissionUpdate) hooks.ToolPermissionContext {
+	permissionCtx := hooks.ToolPermissionContext{
+		Signal:      permissionContextMetadata(request),
+		Suggestions: suggestions,
+	}
+
+	setPermissionContextString(&permissionCtx, "ToolUseID", request, "tool_use_id")
+	setPermissionContextString(&permissionCtx, "AgentID", request, "agent_id")
+	setPermissionContextString(&permissionCtx, "BlockedPath", request, "blocked_path")
+	setPermissionContextString(&permissionCtx, "DecisionReason", request, "decision_reason")
+	setPermissionContextString(&permissionCtx, "Title", request, "title")
+	setPermissionContextString(&permissionCtx, "DisplayName", request, "display_name")
+	setPermissionContextString(&permissionCtx, "Description", request, "description")
+
+	return permissionCtx
+}
+
+func permissionContextMetadata(request map[string]any) map[string]any {
+	keys := []string{
+		"tool_use_id",
+		"agent_id",
+		"blocked_path",
+		"decision_reason",
+		"title",
+		"display_name",
+		"description",
+	}
+	metadata := make(map[string]any)
+	for _, key := range keys {
+		if value, ok := protocol.StringValue(request, key); ok {
+			metadata[key] = value
+		}
+	}
+	if len(metadata) == 0 {
+		return nil
+	}
+	return metadata
+}
+
+func setPermissionContextString(permissionCtx *hooks.ToolPermissionContext, fieldName string, request map[string]any, requestKey string) {
+	value, ok := protocol.StringValue(request, requestKey)
+	if !ok {
+		return
+	}
+	field := reflect.ValueOf(permissionCtx).Elem().FieldByName(fieldName)
+	if !field.IsValid() || !field.CanSet() {
+		return
+	}
+	switch field.Kind() {
+	case reflect.String:
+		field.SetString(value)
+	case reflect.Pointer:
+		if field.Type().Elem().Kind() == reflect.String {
+			field.Set(reflect.ValueOf(&value))
+		}
+	}
 }
 
 func defaultInitializeTimeout() time.Duration {

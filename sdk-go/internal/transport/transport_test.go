@@ -235,6 +235,110 @@ func TestSubprocessCLITransportBuildCommandIncludesRepresentativeOptions(t *test
 	assertContainsPair(t, args, "--mcp-config", `{"mcpServers":{"stdio":{"args":["--serve"],"command":"mcp-server","type":"stdio"}}}`)
 }
 
+func TestSubprocessCLITransportBuildCommandIncludesUpstreamV078Options(t *testing.T) {
+	sessionID := "11111111-1111-4111-8111-111111111111"
+	taskBudgetTotal := 12000
+	thinkingDisplay := ThinkingDisplaySummarized
+	transport := NewSubprocessCLITransport(Options{
+		AllowedTools: []string{"Read"},
+		SessionID:    &sessionID,
+		Settings:     stringPtr(`{"permissions":{"allow":["Read"]}}`),
+		Sandbox: &SandboxSettings{
+			Enabled: boolPtr(true),
+			Network: &SandboxNetworkConfig{
+				AllowedDomains: []string{"api.example.test"},
+			},
+			IgnoreViolations: &SandboxIgnoreViolations{
+				File: []string{"/tmp/cache"},
+			},
+		},
+		StrictMCPConfig:   true,
+		IncludeHookEvents: true,
+		SessionMirror:     true,
+		TaskBudget:        &TaskBudget{Total: taskBudgetTotal},
+		Skills:            []string{"reviewer"},
+		Thinking:          &ThinkingConfig{Type: ThinkingConfigAdaptive, Display: &thinkingDisplay},
+	})
+
+	args, err := transport.buildCommandArgs()
+	if err != nil {
+		t.Fatalf("buildCommandArgs returned error: %v", err)
+	}
+
+	assertContainsPair(t, args, "--session-id", sessionID)
+	assertContainsPair(t, args, "--include-hook-events", "")
+	assertContainsPair(t, args, "--strict-mcp-config", "")
+	assertContainsPair(t, args, "--session-mirror", "")
+	assertContainsPair(t, args, "--task-budget", "12000")
+	assertContainsPair(t, args, "--allowedTools", "Read,Skill(reviewer)")
+	assertContainsPair(t, args, "--setting-sources", "user,project")
+	assertContainsPair(t, args, "--thinking", "adaptive")
+	assertContainsPair(t, args, "--thinking-display", "summarized")
+
+	settingsValue := valueAfterFlag(t, args, "--settings")
+	var settings map[string]any
+	if err := json.Unmarshal([]byte(settingsValue), &settings); err != nil {
+		t.Fatalf("settings value was not JSON: %v\n%s", err, settingsValue)
+	}
+	sandbox, ok := settings["sandbox"].(map[string]any)
+	if !ok || sandbox["enabled"] != true {
+		t.Fatalf("settings did not include merged sandbox: %#v", settings)
+	}
+	network, ok := sandbox["network"].(map[string]any)
+	if !ok || network["allowedDomains"] == nil {
+		t.Fatalf("settings did not include sandbox network: %#v", settings)
+	}
+	ignoreViolations, ok := sandbox["ignoreViolations"].(map[string]any)
+	if !ok || ignoreViolations["file"] == nil {
+		t.Fatalf("settings did not include sandbox ignore violations: %#v", settings)
+	}
+}
+
+func TestSubprocessCLITransportBuildCommandSupportsAllSkillsDefault(t *testing.T) {
+	transport := NewSubprocessCLITransport(Options{
+		Skills: "all",
+	})
+
+	args, err := transport.buildCommandArgs()
+	if err != nil {
+		t.Fatalf("buildCommandArgs returned error: %v", err)
+	}
+
+	assertContainsPair(t, args, "--allowedTools", "Skill")
+	assertContainsPair(t, args, "--setting-sources", "user,project")
+}
+
+func TestSubprocessCLITransportBuildCommandPreservesExplicitEmptySettingSourcesForSkills(t *testing.T) {
+	transport := NewSubprocessCLITransport(Options{
+		Skills:         []string{"reviewer"},
+		SettingSources: []SettingSource{},
+	})
+
+	args, err := transport.buildCommandArgs()
+	if err != nil {
+		t.Fatalf("buildCommandArgs returned error: %v", err)
+	}
+
+	assertContainsPair(t, args, "--allowedTools", "Skill(reviewer)")
+	assertContainsPair(t, args, "--setting-sources", "")
+}
+
+func TestSubprocessCLITransportBuildCommandSupportsDisabledThinking(t *testing.T) {
+	display := ThinkingDisplaySummarized
+	transport := NewSubprocessCLITransport(Options{
+		Thinking: &ThinkingConfig{Type: ThinkingConfigDisabled, Display: &display},
+	})
+
+	args, err := transport.buildCommandArgs()
+	if err != nil {
+		t.Fatalf("buildCommandArgs returned error: %v", err)
+	}
+
+	assertContainsPair(t, args, "--thinking", "disabled")
+	assertNotContains(t, args, "--thinking-display")
+	assertNotContains(t, args, "--max-thinking-tokens")
+}
+
 func buildFakeCLI(t *testing.T) string {
 	t.Helper()
 
@@ -278,6 +382,30 @@ func assertContainsPair(t *testing.T, args []string, flag string, value string) 
 	t.Fatalf("expected %q %q in args: %#v", flag, value, args)
 }
 
+func valueAfterFlag(t *testing.T, args []string, flag string) string {
+	t.Helper()
+	for idx, arg := range args {
+		if arg == flag && idx+1 < len(args) {
+			return args[idx+1]
+		}
+	}
+	t.Fatalf("expected %q in args: %#v", flag, args)
+	return ""
+}
+
+func assertNotContains(t *testing.T, args []string, flag string) {
+	t.Helper()
+	for _, arg := range args {
+		if arg == flag {
+			t.Fatalf("did not expect %q in args: %#v", flag, args)
+		}
+	}
+}
+
 func stringPtr(value string) *string {
+	return &value
+}
+
+func boolPtr(value bool) *bool {
 	return &value
 }

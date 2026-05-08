@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -25,6 +26,17 @@ func main() {
 	switch mode {
 	case "success":
 		writeJSON(os.Stdout, assistantPayload("Echo: "+prompt, ""))
+		writeJSON(os.Stdout, resultPayload())
+	case "mirror":
+		writeJSON(os.Stdout, mirrorPayload(prompt))
+		writeJSON(os.Stdout, assistantPayload("Echo: "+prompt, ""))
+		writeJSON(os.Stdout, resultPayload())
+	case "materialized":
+		if err := assertMaterializedResume(); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			os.Exit(24)
+		}
+		writeJSON(os.Stdout, assistantPayload("materialized", ""))
 		writeJSON(os.Stdout, resultPayload())
 	case "auth":
 		writeJSON(os.Stdout, assistantPayload("Invalid credentials", "authentication_failed"))
@@ -101,6 +113,57 @@ func resultPayload() map[string]any {
 		"session_id":      "session-1",
 		"result":          "done",
 	}
+}
+
+func mirrorPayload(prompt string) map[string]any {
+	configDir := os.Getenv("CLAUDE_CONFIG_DIR")
+	projectKey := os.Getenv("FAKE_PROJECT_KEY")
+	if configDir == "" {
+		configDir = os.TempDir()
+	}
+	if projectKey == "" {
+		projectKey = "project"
+	}
+	return map[string]any{
+		"type":     "transcript_mirror",
+		"filePath": filepath.Join(configDir, "projects", projectKey, "11111111-1111-4111-8111-111111111111.jsonl"),
+		"entries": []map[string]any{
+			{
+				"type":      "user",
+				"uuid":      "mirror-user",
+				"sessionId": "11111111-1111-4111-8111-111111111111",
+				"message": map[string]any{
+					"role":    "user",
+					"content": prompt,
+				},
+			},
+		},
+	}
+}
+
+func assertMaterializedResume() error {
+	configDir := os.Getenv("CLAUDE_CONFIG_DIR")
+	projectKey := os.Getenv("FAKE_PROJECT_KEY")
+	sessionID := os.Getenv("FAKE_EXPECT_SESSION")
+	if configDir == "" || projectKey == "" || sessionID == "" {
+		return fmt.Errorf("missing materialized resume expectation env")
+	}
+	data, err := os.ReadFile(filepath.Join(configDir, "projects", projectKey, sessionID+".jsonl"))
+	if err != nil {
+		return fmt.Errorf("materialized resume file missing: %w", err)
+	}
+	if !strings.Contains(string(data), "stored prompt") {
+		return fmt.Errorf("materialized resume file did not contain stored prompt: %s", string(data))
+	}
+	if os.Getenv("FAKE_EXPECT_AUTH_FILES") == "1" {
+		if _, err := os.Stat(filepath.Join(configDir, ".credentials.json")); err != nil {
+			return fmt.Errorf("materialized credentials missing: %w", err)
+		}
+		if _, err := os.Stat(filepath.Join(configDir, ".claude.json")); err != nil {
+			return fmt.Errorf("materialized claude config missing: %w", err)
+		}
+	}
+	return nil
 }
 
 func writeJSON(w io.Writer, payload map[string]any) {

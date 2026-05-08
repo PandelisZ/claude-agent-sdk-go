@@ -2,13 +2,20 @@ package claudeagentsdk
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	internalcontrol "github.com/PandelisZ/claude-agent-sdk-go/sdk-go/internal/control"
+	internalhooks "github.com/PandelisZ/claude-agent-sdk-go/sdk-go/internal/hooks"
 )
 
 func TestClientConnectQueryReceiveAndServerInfo(t *testing.T) {
@@ -92,6 +99,127 @@ func TestClientControlMethodsAndMCPStatus(t *testing.T) {
 	}
 }
 
+func TestClientContextUsage(t *testing.T) {
+	client := newFakeClient(t, "happy", ClientOptions{})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := client.Connect(ctx); err != nil {
+		t.Fatalf("Connect returned error: %v", err)
+	}
+	defer client.Close()
+
+	usage, err := client.ContextUsage(ctx)
+	if err != nil {
+		t.Fatalf("ContextUsage returned error: %v", err)
+	}
+
+	if usage.TotalTokens != 42 || usage.MaxTokens != 200000 || usage.Model != "claude-sonnet-4-5" {
+		t.Fatalf("unexpected context usage summary: %#v", usage)
+	}
+	if len(usage.Categories) != 1 || usage.Categories[0].Name != "messages" || usage.Categories[0].Tokens != 42 {
+		t.Fatalf("unexpected context usage categories: %#v", usage.Categories)
+	}
+	if len(usage.MCPTools) != 1 || usage.MCPTools[0]["name"] != "search" {
+		t.Fatalf("unexpected context usage MCP tools: %#v", usage.MCPTools)
+	}
+}
+
+func TestClientSendUsesExplicitSessionID(t *testing.T) {
+	client := NewClient(ClientOptions{})
+
+	payload, err := client.clientMessageEnvelope(ClientMessage{
+		SessionID: "explicit-session",
+		Content: UserContent{
+			Kind: UserContentKindText,
+			Text: "hello",
+		},
+	})
+	if err != nil {
+		t.Fatalf("clientMessageEnvelope returned error: %v", err)
+	}
+	if payload["session_id"] != "explicit-session" {
+		t.Fatalf("Send payload did not preserve explicit session ID: %#v", payload)
+	}
+}
+
+func TestRuntimeInitializeRequestIncludesHooksAgentsDynamicSectionsAndSkills(t *testing.T) {
+	matcher := "Write"
+	excludeDynamicSections := true
+	transport := newControlCaptureTransport()
+	runtime := internalcontrol.NewRuntime(internalcontrol.Options{
+		Transport: transport,
+		HookRegistry: internalhooks.NewRegistry(map[internalhooks.Event][]internalhooks.Matcher{
+			internalhooks.EventPreToolUse: {
+				{
+					Matcher: &matcher,
+					Hooks: []internalhooks.Callback{
+						func(context.Context, map[string]any, *string, internalhooks.Context) (internalhooks.Result, error) {
+							return internalhooks.Result{}, nil
+						},
+					},
+				},
+			},
+		}),
+		InitializeAgents: map[string]any{
+			"reviewer": map[string]any{
+				"description": "Review code",
+				"prompt":      "Be precise",
+				"skills":      []string{"code-review"},
+			},
+		},
+		ExcludeDynamicSections: &excludeDynamicSections,
+		InitializeSkills:       []string{"reviewer", "planner"},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := runtime.Connect(ctx); err != nil {
+		t.Fatalf("Connect returned error: %v", err)
+	}
+	defer runtime.Close()
+
+	request := transport.firstRequest(t)
+	if request["subtype"] != "initialize" {
+		t.Fatalf("unexpected initialize subtype: %#v", request)
+	}
+	if hooks, ok := request["hooks"].(map[string]any); !ok || len(hooks) != 1 {
+		t.Fatalf("initialize request did not include hooks: %#v", request)
+	}
+	if !reflect.DeepEqual(request["agents"], map[string]any{
+		"reviewer": map[string]any{
+			"description": "Review code",
+			"prompt":      "Be precise",
+			"skills":      []any{"code-review"},
+		},
+	}) {
+		t.Fatalf("initialize request did not include agents: %#v", request["agents"])
+	}
+	if request["excludeDynamicSections"] != true {
+		t.Fatalf("initialize request did not include excludeDynamicSections: %#v", request)
+	}
+	if !reflect.DeepEqual(request["skills"], []any{"reviewer", "planner"}) {
+		t.Fatalf("initialize request did not include skills list: %#v", request["skills"])
+	}
+}
+
+func TestClientUsesCustomTransport(t *testing.T) {
+	transport := newControlCaptureTransport()
+	client := NewClient(ClientOptions{Transport: transport})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := client.Connect(ctx); err != nil {
+		t.Fatalf("Connect returned error: %v", err)
+	}
+	defer client.Close()
+
+	request := transport.firstRequest(t)
+	if request["subtype"] != "initialize" {
+		t.Fatalf("unexpected initialize request: %#v", request)
+	}
+}
+
 func TestClientPermissionCallbackAllowAndDeny(t *testing.T) {
 	t.Run("allow", func(t *testing.T) {
 		var suggestionsSeen int
@@ -161,6 +289,36 @@ func TestClientPermissionCallbackAllowAndDeny(t *testing.T) {
 			t.Fatalf("unexpected permission deny text: %q", got)
 		}
 	})
+}
+
+func TestClientPermissionCallbackContextIncludesOptionalRequestFields(t *testing.T) {
+	var permissionCtx ToolPermissionContext
+	client := newFakeClient(t, "permission_context", ClientOptions{
+		CanUseTool: func(ctx context.Context, toolName string, input map[string]any, ctxFromRequest ToolPermissionContext) (PermissionResult, error) {
+			permissionCtx = ctxFromRequest
+			return PermissionResultDeny{Message: "captured"}, nil
+		},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := client.Connect(ctx); err != nil {
+		t.Fatalf("Connect returned error: %v", err)
+	}
+	defer client.Close()
+
+	if err := client.Query(ctx, "needs permission"); err != nil {
+		t.Fatalf("Query returned error: %v", err)
+	}
+	_ = receiveResponse(t, client)
+
+	assertPermissionContextValue(t, permissionCtx, "ToolUseID", "toolu_optional_123")
+	assertPermissionContextValue(t, permissionCtx, "AgentID", "agent-reviewer-1")
+	assertPermissionContextValue(t, permissionCtx, "BlockedPath", "/private/blocked.txt")
+	assertPermissionContextValue(t, permissionCtx, "DecisionReason", "hook requested review")
+	assertPermissionContextValue(t, permissionCtx, "Title", "Claude wants to edit blocked.txt")
+	assertPermissionContextValue(t, permissionCtx, "DisplayName", "Edit file")
+	assertPermissionContextValue(t, permissionCtx, "Description", "Writes outside the allowed directory")
 }
 
 func TestClientHookCallbackRegistrationAndResponse(t *testing.T) {
@@ -395,6 +553,150 @@ func assistantText(t *testing.T, message *AssistantMessage) string {
 		t.Fatalf("expected TextBlock, got %T", message.Content[0])
 	}
 	return strings.TrimSpace(block.Text)
+}
+
+type controlCaptureTransport struct {
+	mu       sync.Mutex
+	requests []map[string]any
+	reads    chan []byte
+	closed   chan struct{}
+}
+
+func newControlCaptureTransport() *controlCaptureTransport {
+	return &controlCaptureTransport{
+		reads:  make(chan []byte, 10),
+		closed: make(chan struct{}),
+	}
+}
+
+func (t *controlCaptureTransport) Connect(context.Context) error {
+	return nil
+}
+
+func (t *controlCaptureTransport) Write(ctx context.Context, data []byte) error {
+	var envelope map[string]any
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return err
+	}
+	request, _ := envelope["request"].(map[string]any)
+	if request != nil {
+		t.mu.Lock()
+		t.requests = append(t.requests, cloneAnyMap(request))
+		t.mu.Unlock()
+	}
+
+	requestID, _ := envelope["request_id"].(string)
+	if requestID != "" {
+		response := map[string]any{
+			"type": "control_response",
+			"response": map[string]any{
+				"subtype":    "success",
+				"request_id": requestID,
+				"response":   map[string]any{"output_style": "default"},
+			},
+		}
+		encoded, err := json.Marshal(response)
+		if err != nil {
+			return err
+		}
+		select {
+		case t.reads <- encoded:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+func (t *controlCaptureTransport) Read(ctx context.Context) ([]byte, error) {
+	select {
+	case payload := <-t.reads:
+		return payload, nil
+	case <-t.closed:
+		return nil, io.EOF
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (t *controlCaptureTransport) CloseInput() error {
+	return nil
+}
+
+func (t *controlCaptureTransport) Close() error {
+	select {
+	case <-t.closed:
+	default:
+		close(t.closed)
+	}
+	return nil
+}
+
+func (t *controlCaptureTransport) firstRequest(tb testing.TB) map[string]any {
+	tb.Helper()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.requests) == 0 {
+		tb.Fatal("expected at least one captured control request")
+	}
+	return cloneAnyMap(t.requests[0])
+}
+
+func assertPermissionContextValue(t *testing.T, permissionCtx ToolPermissionContext, fieldName string, want string) {
+	t.Helper()
+	if got, ok := permissionContextField(permissionCtx, fieldName); ok {
+		if got != want {
+			t.Fatalf("%s = %q, want %q", fieldName, got, want)
+		}
+		return
+	}
+
+	metadata, ok := permissionCtx.Signal.(map[string]any)
+	if !ok {
+		t.Fatalf("permission context had no %s field or signal metadata: %#v", fieldName, permissionCtx.Signal)
+	}
+	key := lowerInitialism(fieldName)
+	if got, _ := metadata[key].(string); got != want {
+		t.Fatalf("permission signal metadata %q = %q, want %q", key, got, want)
+	}
+}
+
+func permissionContextField(permissionCtx ToolPermissionContext, fieldName string) (string, bool) {
+	value := reflect.ValueOf(permissionCtx)
+	field := value.FieldByName(fieldName)
+	if !field.IsValid() {
+		return "", false
+	}
+	switch field.Kind() {
+	case reflect.String:
+		return field.String(), true
+	case reflect.Pointer:
+		if field.Type().Elem().Kind() == reflect.String && !field.IsNil() {
+			return field.Elem().String(), true
+		}
+	}
+	return "", false
+}
+
+func lowerInitialism(value string) string {
+	switch value {
+	case "ToolUseID":
+		return "tool_use_id"
+	case "AgentID":
+		return "agent_id"
+	default:
+		if value == "" {
+			return value
+		}
+		var builder strings.Builder
+		for index, r := range value {
+			if index > 0 && r >= 'A' && r <= 'Z' {
+				builder.WriteByte('_')
+			}
+			builder.WriteRune(r)
+		}
+		return strings.ToLower(builder.String())
+	}
 }
 
 func boolPtr(value bool) *bool       { return &value }

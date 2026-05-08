@@ -335,20 +335,7 @@ func deduplicateBySessionID(sessions []SessionInfo) []SessionInfo {
 	return deduped
 }
 
-func applySortAndLimit(sessions []SessionInfo, limit int) []SessionInfo {
-	sort.Slice(sessions, func(i, j int) bool {
-		if sessions[i].LastModified == sessions[j].LastModified {
-			return sessions[i].SessionID < sessions[j].SessionID
-		}
-		return sessions[i].LastModified > sessions[j].LastModified
-	})
-	if limit > 0 && len(sessions) > limit {
-		return sessions[:limit]
-	}
-	return sessions
-}
-
-func listSessionsForProject(directory string, limit int, includeWorktrees bool) ([]SessionInfo, error) {
+func listSessionsForProject(directory string, limit int, offset int, includeWorktrees bool) ([]SessionInfo, error) {
 	canonicalDir := canonicalizePath(directory)
 	worktreePaths := []string(nil)
 	if includeWorktrees {
@@ -360,7 +347,7 @@ func listSessionsForProject(directory string, limit int, includeWorktrees bool) 
 		if !ok {
 			return nil, nil
 		}
-		return applySortAndLimit(readSessionsFromDir(projectDir, canonicalDir), limit), nil
+		return applySortLimitOffset(readSessionsFromDir(projectDir, canonicalDir), limit, offset), nil
 	}
 
 	projectsDir := getProjectsDir()
@@ -370,7 +357,7 @@ func listSessionsForProject(directory string, limit int, includeWorktrees bool) 
 		if !ok {
 			return nil, nil
 		}
-		return applySortAndLimit(readSessionsFromDir(projectDir, canonicalDir), limit), nil
+		return applySortLimitOffset(readSessionsFromDir(projectDir, canonicalDir), limit, offset), nil
 	}
 
 	type indexedWorktree struct {
@@ -412,10 +399,10 @@ func listSessionsForProject(directory string, limit int, includeWorktrees bool) 
 		}
 	}
 
-	return applySortAndLimit(deduplicateBySessionID(allSessions), limit), nil
+	return applySortLimitOffset(deduplicateBySessionID(allSessions), limit, offset), nil
 }
 
-func listAllSessions(limit int) ([]SessionInfo, error) {
+func listAllSessions(limit int, offset int) ([]SessionInfo, error) {
 	entries, err := os.ReadDir(getProjectsDir())
 	if err != nil {
 		return nil, nil
@@ -426,14 +413,14 @@ func listAllSessions(limit int) ([]SessionInfo, error) {
 			allSessions = append(allSessions, readSessionsFromDir(filepath.Join(getProjectsDir(), entry.Name()), "")...)
 		}
 	}
-	return applySortAndLimit(deduplicateBySessionID(allSessions), limit), nil
+	return applySortLimitOffset(deduplicateBySessionID(allSessions), limit, offset), nil
 }
 
-func ListSessions(directory string, limit int, includeWorktrees bool) ([]SessionInfo, error) {
+func ListSessions(directory string, limit int, offset int, includeWorktrees bool) ([]SessionInfo, error) {
 	if directory != "" {
-		return listSessionsForProject(directory, limit, includeWorktrees)
+		return listSessionsForProject(directory, limit, offset, includeWorktrees)
 	}
-	return listAllSessions(limit)
+	return listAllSessions(limit, offset)
 }
 
 func GetSessionInfo(sessionID string, directory string) (*SessionInfo, error) {

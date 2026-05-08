@@ -3,6 +3,7 @@ package protocol
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 )
 
 const (
@@ -156,8 +157,25 @@ func FloatValue(data map[string]any, key string) (*float64, bool) {
 	if !ok || raw == nil {
 		return nil, false
 	}
-	value, ok := raw.(float64)
-	if !ok {
+	var value float64
+	switch typed := raw.(type) {
+	case float64:
+		value = typed
+	case float32:
+		value = float64(typed)
+	case int:
+		value = float64(typed)
+	case int64:
+		value = float64(typed)
+	case int32:
+		value = float64(typed)
+	case json.Number:
+		parsed, err := strconv.ParseFloat(string(typed), 64)
+		if err != nil {
+			return nil, false
+		}
+		value = parsed
+	default:
 		return nil, false
 	}
 	return &value, true

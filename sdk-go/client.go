@@ -8,6 +8,7 @@ import (
 
 	"github.com/PandelisZ/claude-agent-sdk-go/sdk-go/internal/control"
 	internalhooks "github.com/PandelisZ/claude-agent-sdk-go/sdk-go/internal/hooks"
+	"github.com/PandelisZ/claude-agent-sdk-go/sdk-go/internal/protocol"
 	internaltransport "github.com/PandelisZ/claude-agent-sdk-go/sdk-go/internal/transport"
 )
 
@@ -57,6 +58,7 @@ type ClientOptions struct {
 	ClaudeAgentOptions
 	CanUseTool        CanUseToolCallback
 	Hooks             map[HookEvent][]HookMatcher
+	Transport         Transport
 	InitializeTimeout time.Duration
 }
 
@@ -72,6 +74,10 @@ type Client struct {
 
 	mu      sync.RWMutex
 	runtime *control.Runtime
+
+	materialized    *materializedStoreSession
+	originalOptions *ClaudeAgentOptions
+	mirror          *sessionStoreMirror
 }
 
 func NewClient(options ClientOptions) *Client {
@@ -86,24 +92,62 @@ func (c *Client) Connect(ctx context.Context) error {
 		return mapInternalTransportError(c.runtime.Connect(ctx))
 	}
 
+	originalOptions := c.options.ClaudeAgentOptions
+	preparedOptions := originalOptions
+	var materialized *materializedStoreSession
+	var err error
+	if c.options.Transport == nil {
+		preparedOptions, materialized, err = prepareSessionStoreOptions(ctx, originalOptions)
+		if err != nil {
+			return err
+		}
+	} else if err := validateSessionStoreOptions(originalOptions); err != nil {
+		return err
+	}
+	c.options.ClaudeAgentOptions = preparedOptions
+	c.materialized = materialized
+	c.originalOptions = &originalOptions
+	c.mirror = newSessionStoreMirror(preparedOptions)
+
 	transportOptions, handlers, err := c.prepareTransport()
 	if err != nil {
+		_ = cleanupMaterializedStoreSession(materialized)
+		c.materialized = nil
+		c.originalOptions = nil
+		c.mirror = nil
+		c.options.ClaudeAgentOptions = originalOptions
 		return err
 	}
 
+	hooks := effectiveHooks(c.options)
 	var hookRegistry *internalhooks.Registry
-	if len(c.options.Hooks) > 0 {
-		hookRegistry = internalhooks.NewRegistry(c.options.Hooks)
+	if len(hooks) > 0 {
+		hookRegistry = internalhooks.NewRegistry(hooks)
 	}
+	canUseTool := effectiveCanUseTool(c.options)
 
+	var transport internaltransport.Transport
+	if c.options.Transport != nil {
+		transport = c.options.Transport
+	} else {
+		transport = internaltransport.NewSubprocessCLITransport(transportOptions)
+	}
 	runtime := control.NewRuntime(control.Options{
-		Transport:         internaltransport.NewSubprocessCLITransport(transportOptions),
-		InitializeTimeout: c.options.InitializeTimeout,
-		PermissionHandler: c.options.CanUseTool,
-		HookRegistry:      hookRegistry,
-		MCPHandlers:       handlers,
+		Transport:              transport,
+		InitializeTimeout:      c.options.InitializeTimeout,
+		PermissionHandler:      canUseTool,
+		HookRegistry:           hookRegistry,
+		MCPHandlers:            handlers,
+		InitializeAgents:       extractInitializeAgents(c.options.ClaudeAgentOptions),
+		ExcludeDynamicSections: extractExcludeDynamicSections(c.options.ClaudeAgentOptions),
+		InitializeSkills:       extractInitializeSkills(c.options.ClaudeAgentOptions),
 	})
 	if err := runtime.Connect(ctx); err != nil {
+		_ = cleanupMaterializedStoreSession(materialized)
+		c.materialized = nil
+		c.originalOptions = nil
+		c.mirror = nil
+		c.options.ClaudeAgentOptions = originalOptions
 		return mapInternalTransportError(err)
 	}
 
@@ -140,11 +184,31 @@ func (c *Client) Receive(ctx context.Context) (Message, error) {
 		return nil, err
 	}
 
-	payload, err := runtime.Receive(ctx)
-	if err != nil {
-		return nil, mapInternalTransportError(err)
+	for {
+		payload, err := runtime.Receive(ctx)
+		if err != nil {
+			return nil, mapInternalTransportError(err)
+		}
+		raw, err := protocol.DecodeJSONBytes(payload)
+		if err != nil {
+			return nil, NewCLIJSONDecodeError(string(payload), err)
+		}
+		if handled, mirrorMessage, err := c.mirror.handlePayload(ctx, raw); handled {
+			if err != nil {
+				return nil, err
+			}
+			if mirrorMessage != nil {
+				return mirrorMessage, nil
+			}
+			continue
+		}
+		if messageType, _ := protocol.StringValue(raw, "type"); messageType == protocol.MessageTypeResult {
+			if mirrorMessage := c.mirror.flush(ctx); mirrorMessage != nil {
+				return mirrorMessage, nil
+			}
+		}
+		return parseQueryJSON(payload)
 	}
-	return parseQueryJSON(payload)
 }
 
 func (c *Client) Interrupt(ctx context.Context) error {
@@ -209,6 +273,18 @@ func (c *Client) MCPStatus(ctx context.Context) (MCPStatusResponse, error) {
 	return ParseMCPStatusResponse(response)
 }
 
+func (c *Client) ContextUsage(ctx context.Context) (ContextUsageResponse, error) {
+	response, err := c.sendControl(ctx, map[string]any{"subtype": "get_context_usage"})
+	if err != nil {
+		return ContextUsageResponse{}, err
+	}
+	return ParseContextUsageResponse(response)
+}
+
+func (c *Client) GetContextUsage(ctx context.Context) (ContextUsageResponse, error) {
+	return c.ContextUsage(ctx)
+}
+
 func (c *Client) ServerInfo() map[string]any {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -221,13 +297,34 @@ func (c *Client) ServerInfo() map[string]any {
 func (c *Client) Close() error {
 	c.mu.Lock()
 	runtime := c.runtime
+	materialized := c.materialized
+	originalOptions := c.originalOptions
+	mirror := c.mirror
 	c.runtime = nil
+	c.materialized = nil
+	c.originalOptions = nil
+	c.mirror = nil
+	if originalOptions != nil {
+		c.options.ClaudeAgentOptions = *originalOptions
+	}
 	c.mu.Unlock()
 
-	if runtime == nil {
-		return nil
+	var cleanupErr error
+	if mirrorMessage := mirror.flush(context.Background()); mirrorMessage != nil {
+		if typed, ok := mirrorMessage.(*MirrorErrorMessage); ok {
+			cleanupErr = fmt.Errorf("session store mirror flush failed: %s", typed.Error)
+		}
 	}
-	return mapInternalTransportError(runtime.Close())
+	if materialized != nil {
+		cleanupErr = cleanupMaterializedStoreSession(materialized)
+	}
+	if runtime == nil {
+		return cleanupErr
+	}
+	if err := mapInternalTransportError(runtime.Close()); err != nil {
+		return err
+	}
+	return cleanupErr
 }
 
 func (c *Client) sendControl(ctx context.Context, request map[string]any) (map[string]any, error) {
@@ -253,7 +350,7 @@ func (c *Client) getRuntime() (*control.Runtime, error) {
 
 func (c *Client) prepareTransport() (internaltransport.Options, map[string]control.MCPHandler, error) {
 	options := c.options.ClaudeAgentOptions
-	if c.options.CanUseTool != nil {
+	if effectiveCanUseTool(c.options) != nil {
 		if options.PermissionPromptToolName != nil {
 			return internaltransport.Options{}, nil, fmt.Errorf("can_use_tool callback cannot be used with permission_prompt_tool_name")
 		}

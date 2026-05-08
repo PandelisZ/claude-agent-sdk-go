@@ -16,9 +16,19 @@ type QueryHandler func(Message) error
 // Query executes a one-shot prompt against the local Claude CLI and collects
 // all emitted messages.
 func Query(ctx context.Context, prompt string, options ClaudeAgentOptions) ([]Message, error) {
+	return queryWithTransport(ctx, prompt, options, nil)
+}
+
+// QueryWithTransport executes a one-shot prompt using a caller-provided
+// transport instead of spawning the Claude CLI subprocess.
+func QueryWithTransport(ctx context.Context, prompt string, options ClaudeAgentOptions, transport Transport) ([]Message, error) {
+	return queryWithTransport(ctx, prompt, options, transport)
+}
+
+func queryWithTransport(ctx context.Context, prompt string, options ClaudeAgentOptions, transport Transport) ([]Message, error) {
 	messages := make([]Message, 0, 8)
 
-	err := QueryWithCallback(ctx, prompt, options, func(message Message) error {
+	err := queryWithCallbackAndTransport(ctx, prompt, options, transport, func(message Message) error {
 		messages = append(messages, message)
 		return nil
 	})
@@ -32,12 +42,70 @@ func Query(ctx context.Context, prompt string, options ClaudeAgentOptions) ([]Me
 // QueryWithCallback executes a one-shot prompt against the local Claude CLI and
 // streams each parsed message to handler.
 func QueryWithCallback(ctx context.Context, prompt string, options ClaudeAgentOptions, handler QueryHandler) error {
+	return queryWithCallbackAndTransport(ctx, prompt, options, nil, handler)
+}
+
+// QueryWithCallbackAndTransport executes a one-shot prompt using a
+// caller-provided transport and streams parsed messages to handler.
+func QueryWithCallbackAndTransport(ctx context.Context, prompt string, options ClaudeAgentOptions, transport Transport, handler QueryHandler) error {
+	return queryWithCallbackAndTransport(ctx, prompt, options, transport, handler)
+}
+
+func queryWithCallbackAndTransport(ctx context.Context, prompt string, options ClaudeAgentOptions, transport Transport, handler QueryHandler) error {
 	if handler == nil {
 		handler = func(Message) error { return nil }
 	}
+	if options.CanUseTool != nil {
+		return fmt.Errorf("can_use_tool callback requires streaming input; use Client for interactive permission handling")
+	}
+	if queryNeedsControlRuntime(options) {
+		return queryWithClientRuntime(ctx, prompt, options, transport, handler)
+	}
 
-	runner := queryruntime.NewRunner(internaltransport.NewSubprocessCLITransport(toInternalTransportOptions(options)))
-	err := runner.Run(ctx, prompt, func(payload []byte) error {
+	preparedOptions := options
+	var materialized *materializedStoreSession
+	var err error
+	if transport == nil {
+		preparedOptions, materialized, err = prepareSessionStoreOptions(ctx, options)
+		if err != nil {
+			return err
+		}
+	} else if err := validateSessionStoreOptions(options); err != nil {
+		return err
+	}
+	defer func() {
+		_ = cleanupMaterializedStoreSession(materialized)
+	}()
+
+	var runtimeTransport internaltransport.Transport
+	if transport != nil {
+		runtimeTransport = transport
+	} else {
+		runtimeTransport = internaltransport.NewSubprocessCLITransport(toInternalTransportOptions(preparedOptions))
+	}
+	mirror := newSessionStoreMirror(preparedOptions)
+	runner := queryruntime.NewRunner(runtimeTransport)
+	err = runner.Run(ctx, prompt, func(payload []byte) error {
+		raw, err := protocol.DecodeJSONBytes(payload)
+		if err != nil {
+			return NewCLIJSONDecodeError(string(payload), err)
+		}
+		if handled, mirrorMessage, err := mirror.handlePayload(ctx, raw); handled {
+			if err != nil {
+				return err
+			}
+			if mirrorMessage != nil {
+				return handler(mirrorMessage)
+			}
+			return nil
+		}
+		if messageType, _ := protocol.StringValue(raw, "type"); messageType == protocol.MessageTypeResult {
+			if mirrorMessage := mirror.flush(ctx); mirrorMessage != nil {
+				if err := handler(mirrorMessage); err != nil {
+					return err
+				}
+			}
+		}
 		message, err := parseQueryJSON(payload)
 		if err != nil {
 			return err
@@ -45,118 +113,6 @@ func QueryWithCallback(ctx context.Context, prompt string, options ClaudeAgentOp
 		return handler(message)
 	})
 	return mapInternalTransportError(err)
-}
-
-func toInternalTransportOptions(options ClaudeAgentOptions) internaltransport.Options {
-	internalOptions := internaltransport.Options{
-		Tools:                    append([]string(nil), options.Tools...),
-		AllowedTools:             append([]string(nil), options.AllowedTools...),
-		SystemPrompt:             options.SystemPrompt,
-		ContinueConversation:     options.ContinueConversation,
-		Resume:                   options.Resume,
-		ForkSession:              options.ForkSession,
-		MaxTurns:                 options.MaxTurns,
-		MaxBudgetUSD:             options.MaxBudgetUSD,
-		DisallowedTools:          append([]string(nil), options.DisallowedTools...),
-		Model:                    options.Model,
-		FallbackModel:            options.FallbackModel,
-		PermissionPromptToolName: options.PermissionPromptToolName,
-		Cwd:                      options.Cwd,
-		CLIPath:                  options.CLIPath,
-		Settings:                 options.Settings,
-		AddDirs:                  append([]string(nil), options.AddDirs...),
-		Env:                      cloneStringMap(options.Env),
-		ExtraArgs:                cloneOptionalStringMap(options.ExtraArgs),
-		MaxBufferSize:            options.MaxBufferSize,
-		User:                     options.User,
-		IncludePartialMessages:   options.IncludePartialMessages,
-		Plugins:                  make([]internaltransport.SDKPluginConfig, 0, len(options.Plugins)),
-		Effort:                   options.Effort,
-		OutputFormat:             cloneAnyMap(options.OutputFormat),
-		EnableFileCheckpointing:  options.EnableFileCheckpointing,
-	}
-
-	if options.ToolsPreset != nil {
-		internalOptions.ToolsPreset = &internaltransport.ToolsPreset{
-			Type:   options.ToolsPreset.Type,
-			Preset: options.ToolsPreset.Preset,
-		}
-	}
-	if options.SystemPromptPreset != nil {
-		internalOptions.SystemPromptPreset = &internaltransport.SystemPromptPreset{
-			Type:   options.SystemPromptPreset.Type,
-			Preset: options.SystemPromptPreset.Preset,
-			Append: options.SystemPromptPreset.Append,
-		}
-	}
-	if options.SystemPromptFile != nil {
-		internalOptions.SystemPromptFile = &internaltransport.SystemPromptFile{
-			Type: options.SystemPromptFile.Type,
-			Path: options.SystemPromptFile.Path,
-		}
-	}
-	if options.PermissionMode != nil {
-		mode := internaltransport.PermissionMode(*options.PermissionMode)
-		internalOptions.PermissionMode = &mode
-	}
-	if len(options.Betas) > 0 {
-		internalOptions.Betas = make([]internaltransport.SdkBeta, 0, len(options.Betas))
-		for _, beta := range options.Betas {
-			internalOptions.Betas = append(internalOptions.Betas, internaltransport.SdkBeta(beta))
-		}
-	}
-	if len(options.MCPServers) > 0 {
-		internalOptions.MCPServers = make(map[string]internaltransport.MCPServerConfig, len(options.MCPServers))
-		for name, config := range options.MCPServers {
-			switch typed := config.(type) {
-			case MCPStdioServerConfig:
-				internalOptions.MCPServers[name] = internaltransport.MCPStdioServerConfig{
-					Type:    typed.Type,
-					Command: typed.Command,
-					Args:    append([]string(nil), typed.Args...),
-					Env:     cloneStringMap(typed.Env),
-				}
-			case MCPSSEServerConfig:
-				internalOptions.MCPServers[name] = internaltransport.MCPSSEServerConfig{
-					Type:    typed.Type,
-					URL:     typed.URL,
-					Headers: cloneStringMap(typed.Headers),
-				}
-			case MCPHTTPServerConfig:
-				internalOptions.MCPServers[name] = internaltransport.MCPHTTPServerConfig{
-					Type:    typed.Type,
-					URL:     typed.URL,
-					Headers: cloneStringMap(typed.Headers),
-				}
-			case MCPSDKServerConfig:
-				internalOptions.MCPServers[name] = internaltransport.MCPSDKServerConfig{
-					Type: typed.Type,
-					Name: typed.Name,
-				}
-			}
-		}
-	}
-	if len(options.SettingSources) > 0 {
-		internalOptions.SettingSources = make([]internaltransport.SettingSource, 0, len(options.SettingSources))
-		for _, source := range options.SettingSources {
-			internalOptions.SettingSources = append(internalOptions.SettingSources, internaltransport.SettingSource(source))
-		}
-	}
-	for _, plugin := range options.Plugins {
-		internalOptions.Plugins = append(internalOptions.Plugins, internaltransport.SDKPluginConfig{
-			Type: plugin.Type,
-			Path: plugin.Path,
-		})
-	}
-	if options.Thinking != nil {
-		internalOptions.Thinking = &internaltransport.ThinkingConfig{
-			Type:         internaltransport.ThinkingConfigType(options.Thinking.Type),
-			BudgetTokens: options.Thinking.BudgetTokens,
-		}
-	}
-	internalOptions.MaxThinkingTokens = options.MaxThinkingTokens
-
-	return internalOptions
 }
 
 func mapInternalTransportError(err error) error {
@@ -182,39 +138,6 @@ func mapInternalTransportError(err error) error {
 	}
 
 	return err
-}
-
-func cloneStringMap(values map[string]string) map[string]string {
-	if len(values) == 0 {
-		return nil
-	}
-	cloned := make(map[string]string, len(values))
-	for key, value := range values {
-		cloned[key] = value
-	}
-	return cloned
-}
-
-func cloneOptionalStringMap(values map[string]*string) map[string]*string {
-	if len(values) == 0 {
-		return nil
-	}
-	cloned := make(map[string]*string, len(values))
-	for key, value := range values {
-		cloned[key] = value
-	}
-	return cloned
-}
-
-func cloneAnyMap(values map[string]any) map[string]any {
-	if len(values) == 0 {
-		return nil
-	}
-	cloned := make(map[string]any, len(values))
-	for key, value := range values {
-		cloned[key] = value
-	}
-	return cloned
 }
 
 func parseQueryJSON(data []byte) (Message, error) {
@@ -411,6 +334,19 @@ func parseQuerySystemMessage(payload map[string]any) (Message, error) {
 			ToolUseID:     optionalQueryString(payload, "tool_use_id"),
 			Usage:         usage,
 		}, nil
+	case "mirror_error":
+		return &MirrorErrorMessage{
+			SystemMessage: base,
+			Key:           parseQuerySessionKey(payload["key"]),
+			Error:         queryStringValueOrEmpty(payload, "error"),
+		}, nil
+	case "hook_started", "hook_response":
+		return &HookEventMessage{
+			SystemMessage: base,
+			HookEventName: firstQueryStringValue(payload, "hook_event", "hook_name", "hook_event_name"),
+			SessionID:     optionalQueryString(payload, "session_id"),
+			UUID:          optionalQueryString(payload, "uuid"),
+		}, nil
 	default:
 		return &base, nil
 	}
@@ -421,22 +357,6 @@ func parseQueryResultMessage(payload map[string]any) (Message, error) {
 	if err != nil {
 		return nil, NewMessageParseError("missing required field in result message: 'subtype'", payload)
 	}
-	durationMS, err := requiredQueryInt(payload, "duration_ms", "result message")
-	if err != nil {
-		return nil, err
-	}
-	durationAPIMS, err := requiredQueryInt(payload, "duration_api_ms", "result message")
-	if err != nil {
-		return nil, err
-	}
-	isError, ok := protocol.BoolValue(payload, "is_error")
-	if !ok || isError == nil {
-		return nil, NewMessageParseError("missing required field in result message: 'is_error'", payload)
-	}
-	numTurns, err := requiredQueryInt(payload, "num_turns", "result message")
-	if err != nil {
-		return nil, err
-	}
 	sessionID, err := protocol.RequireString(payload, "session_id")
 	if err != nil {
 		return nil, NewMessageParseError("missing required field in result message: 'session_id'", payload)
@@ -444,10 +364,10 @@ func parseQueryResultMessage(payload map[string]any) (Message, error) {
 
 	return &ResultMessage{
 		Subtype:           subtype,
-		DurationMS:        durationMS,
-		DurationAPIMS:     durationAPIMS,
-		IsError:           *isError,
-		NumTurns:          numTurns,
+		DurationMS:        optionalQueryIntValue(payload, "duration_ms"),
+		DurationAPIMS:     optionalQueryIntValue(payload, "duration_api_ms"),
+		IsError:           optionalQueryBoolValue(payload, "is_error"),
+		NumTurns:          optionalQueryIntValue(payload, "num_turns"),
 		SessionID:         sessionID,
 		StopReason:        optionalQueryString(payload, "stop_reason"),
 		TotalCostUSD:      optionalQueryFloat(payload, "total_cost_usd"),
@@ -456,6 +376,9 @@ func parseQueryResultMessage(payload map[string]any) (Message, error) {
 		StructuredOutput:  payload["structured_output"],
 		ModelUsage:        optionalQueryMap(payload, "modelUsage"),
 		PermissionDenials: optionalQuerySlice(payload, "permission_denials"),
+		DeferredToolUse:   parseQueryDeferredToolUse(payload["deferred_tool_use"]),
+		Errors:            optionalQueryStringSlice(payload, "errors"),
+		APIErrorStatus:    optionalQueryIntPtr(payload, "api_error_status"),
 		UUID:              optionalQueryString(payload, "uuid"),
 	}, nil
 }
@@ -589,6 +512,37 @@ func parseQueryContentBlocks(items []any) ([]ContentBlock, error) {
 				block.IsError = isError
 			}
 			blocks = append(blocks, block)
+		case "server_tool_use":
+			id, err := protocol.RequireString(raw, "id")
+			if err != nil {
+				return nil, fmt.Errorf("server_tool_use block missing 'id'")
+			}
+			name, err := protocol.RequireString(raw, "name")
+			if err != nil {
+				return nil, fmt.Errorf("server_tool_use block missing 'name'")
+			}
+			input, err := protocol.RequireMap(raw, "input")
+			if err != nil {
+				return nil, fmt.Errorf("server_tool_use block missing 'input'")
+			}
+			blocks = append(blocks, ServerToolUseBlock{
+				ID:    id,
+				Name:  ServerToolName(name),
+				Input: input,
+			})
+		case "advisor_tool_result", "server_tool_result":
+			toolUseID, err := protocol.RequireString(raw, "tool_use_id")
+			if err != nil {
+				return nil, fmt.Errorf("%s block missing 'tool_use_id'", blockType)
+			}
+			content, err := protocol.RequireMap(raw, "content")
+			if err != nil {
+				return nil, fmt.Errorf("%s block missing 'content'", blockType)
+			}
+			blocks = append(blocks, ServerToolResultBlock{
+				ToolUseID: toolUseID,
+				Content:   content,
+			})
 		default:
 			blocks = append(blocks, UnknownContentBlock{
 				Type: blockType,
@@ -671,6 +625,22 @@ func optionalQueryString(payload map[string]any, key string) *string {
 	return nil
 }
 
+func firstQueryStringValue(payload map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := protocol.StringValue(payload, key); ok {
+			return value
+		}
+	}
+	return ""
+}
+
+func queryStringValueOrEmpty(payload map[string]any, key string) string {
+	if value, ok := protocol.StringValue(payload, key); ok {
+		return value
+	}
+	return ""
+}
+
 func optionalQueryMap(payload map[string]any, key string) map[string]any {
 	if value, ok := protocol.MapValue(payload, key); ok {
 		return value
@@ -692,9 +662,76 @@ func optionalQueryInt64(payload map[string]any, key string) *int64 {
 	return nil
 }
 
+func optionalQueryIntPtr(payload map[string]any, key string) *int {
+	if value, ok := protocol.IntValue(payload, key); ok {
+		return value
+	}
+	return nil
+}
+
+func optionalQueryIntValue(payload map[string]any, key string) int {
+	if value, ok := protocol.IntValue(payload, key); ok && value != nil {
+		return *value
+	}
+	return 0
+}
+
+func optionalQueryBoolValue(payload map[string]any, key string) bool {
+	if value, ok := protocol.BoolValue(payload, key); ok && value != nil {
+		return *value
+	}
+	return false
+}
+
 func optionalQuerySlice(payload map[string]any, key string) []any {
 	if value, ok := protocol.SliceValue(payload, key); ok {
 		return value
 	}
 	return nil
+}
+
+func optionalQueryStringSlice(payload map[string]any, key string) []string {
+	items, ok := protocol.SliceValue(payload, key)
+	if !ok {
+		return nil
+	}
+	values := make([]string, 0, len(items))
+	for _, item := range items {
+		if value, ok := item.(string); ok {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
+func parseQueryDeferredToolUse(raw any) *DeferredToolUse {
+	payload, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	id, _ := protocol.StringValue(payload, "id")
+	name, _ := protocol.StringValue(payload, "name")
+	input, _ := protocol.MapValue(payload, "input")
+	return &DeferredToolUse{
+		ID:    id,
+		Name:  name,
+		Input: input,
+	}
+}
+
+func parseQuerySessionKey(raw any) *SessionKey {
+	payload, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	projectKey, _ := protocol.StringValue(payload, "project_key")
+	sessionID, _ := protocol.StringValue(payload, "session_id")
+	key := &SessionKey{
+		ProjectKey: projectKey,
+		SessionID:  sessionID,
+	}
+	if subpath, ok := protocol.StringValue(payload, "subpath"); ok {
+		key.Subpath = &subpath
+	}
+	return key
 }

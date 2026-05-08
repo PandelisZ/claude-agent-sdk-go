@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -141,6 +142,33 @@ func (s *state) handleControlRequest(payload map[string]any) {
 				},
 			},
 		})
+	case "get_context_usage":
+		writeJSON(map[string]any{
+			"type": "control_response",
+			"response": map[string]any{
+				"subtype":    "success",
+				"request_id": requestID,
+				"response": map[string]any{
+					"categories": []map[string]any{
+						{
+							"name":   "messages",
+							"tokens": 42,
+							"color":  "blue",
+						},
+					},
+					"totalTokens":          42,
+					"maxTokens":            200000,
+					"rawMaxTokens":         200000,
+					"percentage":           0.021,
+					"model":                "claude-sonnet-4-5",
+					"isAutoCompactEnabled": true,
+					"memoryFiles":          []map[string]any{{"path": "CLAUDE.md", "tokens": 10}},
+					"mcpTools":             []map[string]any{{"name": "search", "tokens": 5}},
+					"agents":               []map[string]any{{"agentType": "reviewer", "tokens": 4}},
+					"gridRows":             [][]map[string]any{{{"name": "messages", "tokens": 42}}},
+				},
+			},
+		})
 	default:
 		writeJSON(map[string]any{
 			"type": "control_response",
@@ -220,32 +248,46 @@ func (s *state) handleUser(payload map[string]any) {
 	case "happy":
 		writeJSON(assistantPayload("Echo: "+prompt, ""))
 		writeJSON(resultPayload())
+	case "mirror":
+		writeJSON(mirrorPayload(prompt))
+		writeJSON(assistantPayload("Echo: "+prompt, ""))
+		writeJSON(resultPayload())
 	case "auth":
 		writeJSON(assistantPayload("Invalid credentials", "authentication_failed"))
 		writeJSON(resultPayload())
-	case "permission_allow", "permission_deny":
+	case "permission_allow", "permission_deny", "permission_context":
 		s.pending = "permission"
-		writeJSON(map[string]any{
-			"type":       "control_request",
-			"request_id": "tool-request-1",
-			"request": map[string]any{
-				"subtype":   "can_use_tool",
-				"tool_name": "Write",
-				"input": map[string]any{
-					"path":   "draft.txt",
-					"prompt": prompt,
-				},
-				"permission_suggestions": []map[string]any{
-					{
-						"type":        "addRules",
-						"destination": "session",
-						"behavior":    "allow",
-						"rules": []map[string]any{
-							{"toolName": "Write", "ruleContent": "*.txt"},
-						},
+		request := map[string]any{
+			"subtype":   "can_use_tool",
+			"tool_name": "Write",
+			"input": map[string]any{
+				"path":   "draft.txt",
+				"prompt": prompt,
+			},
+			"permission_suggestions": []map[string]any{
+				{
+					"type":        "addRules",
+					"destination": "session",
+					"behavior":    "allow",
+					"rules": []map[string]any{
+						{"toolName": "Write", "ruleContent": "*.txt"},
 					},
 				},
 			},
+		}
+		if s.mode == "permission_context" {
+			request["tool_use_id"] = "toolu_optional_123"
+			request["agent_id"] = "agent-reviewer-1"
+			request["blocked_path"] = "/private/blocked.txt"
+			request["decision_reason"] = "hook requested review"
+			request["title"] = "Claude wants to edit blocked.txt"
+			request["display_name"] = "Edit file"
+			request["description"] = "Writes outside the allowed directory"
+		}
+		writeJSON(map[string]any{
+			"type":       "control_request",
+			"request_id": "tool-request-1",
+			"request":    request,
 		})
 	case "hook":
 		s.pending = "hook"
@@ -383,6 +425,32 @@ func resultPayload() map[string]any {
 		"num_turns":       1,
 		"session_id":      "session-1",
 		"result":          "done",
+	}
+}
+
+func mirrorPayload(prompt string) map[string]any {
+	configDir := os.Getenv("CLAUDE_CONFIG_DIR")
+	projectKey := os.Getenv("FAKE_PROJECT_KEY")
+	if configDir == "" {
+		configDir = os.TempDir()
+	}
+	if projectKey == "" {
+		projectKey = "project"
+	}
+	return map[string]any{
+		"type":     "transcript_mirror",
+		"filePath": filepath.Join(configDir, "projects", projectKey, "22222222-2222-4222-8222-222222222222.jsonl"),
+		"entries": []map[string]any{
+			{
+				"type":      "user",
+				"uuid":      "client-mirror-user",
+				"sessionId": "22222222-2222-4222-8222-222222222222",
+				"message": map[string]any{
+					"role":    "user",
+					"content": prompt,
+				},
+			},
+		},
 	}
 }
 

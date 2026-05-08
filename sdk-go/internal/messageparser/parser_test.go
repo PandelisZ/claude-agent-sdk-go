@@ -231,6 +231,134 @@ func TestParsePayloadUnknownMessageAndUnknownContent(t *testing.T) {
 	}
 }
 
+func TestParsePayloadUpstreamV078ContentBlocks(t *testing.T) {
+	payload := map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"model": "claude-sonnet-4-5",
+			"content": []any{
+				map[string]any{
+					"type":  "server_tool_use",
+					"id":    "srvu_1",
+					"name":  "web_search",
+					"input": map[string]any{"query": "claude agent sdk"},
+				},
+				map[string]any{
+					"type":        "server_tool_result",
+					"tool_use_id": "srvu_1",
+					"content": map[string]any{
+						"type":  "web_search_result",
+						"items": []any{"result"},
+					},
+				},
+			},
+		},
+	}
+
+	message, err := ParsePayload(payload)
+	if err != nil {
+		t.Fatalf("ParsePayload returned error: %v", err)
+	}
+	assistant, ok := message.(*claudeagentsdk.AssistantMessage)
+	if !ok {
+		t.Fatalf("expected AssistantMessage, got %T", message)
+	}
+	use, ok := assistant.Content[0].(claudeagentsdk.ServerToolUseBlock)
+	if !ok {
+		t.Fatalf("expected ServerToolUseBlock, got %T", assistant.Content[0])
+	}
+	if use.ID != "srvu_1" || use.Name != claudeagentsdk.ServerToolNameWebSearch {
+		t.Fatalf("unexpected server tool use: %#v", use)
+	}
+	result, ok := assistant.Content[1].(claudeagentsdk.ServerToolResultBlock)
+	if !ok {
+		t.Fatalf("expected ServerToolResultBlock, got %T", assistant.Content[1])
+	}
+	if result.ToolUseID != "srvu_1" || result.Content["type"] != "web_search_result" {
+		t.Fatalf("unexpected server tool result: %#v", result)
+	}
+}
+
+func TestParsePayloadUpstreamV078SystemMessages(t *testing.T) {
+	mirrorPayload := map[string]any{
+		"type":    "system",
+		"subtype": "mirror_error",
+		"key": map[string]any{
+			"project_key": "project",
+			"session_id":  "11111111-1111-4111-8111-111111111111",
+		},
+		"error": "store unavailable",
+	}
+	mirrorMessage, err := ParsePayload(mirrorPayload)
+	if err != nil {
+		t.Fatalf("ParsePayload mirror_error returned error: %v", err)
+	}
+	mirrorError, ok := mirrorMessage.(*claudeagentsdk.MirrorErrorMessage)
+	if !ok {
+		t.Fatalf("expected MirrorErrorMessage, got %T", mirrorMessage)
+	}
+	if mirrorError.Error != "store unavailable" || mirrorError.Key == nil || mirrorError.Key.ProjectKey != "project" {
+		t.Fatalf("unexpected mirror error: %#v", mirrorError)
+	}
+
+	hookPayload := map[string]any{
+		"type":       "system",
+		"subtype":    "hook_response",
+		"hook_event": "PreToolUse",
+		"session_id": "session-1",
+		"uuid":       "uuid-hook-1",
+		"outcome":    "approved",
+	}
+	hookMessage, err := ParsePayload(hookPayload)
+	if err != nil {
+		t.Fatalf("ParsePayload hook_response returned error: %v", err)
+	}
+	hookEvent, ok := hookMessage.(*claudeagentsdk.HookEventMessage)
+	if !ok {
+		t.Fatalf("expected HookEventMessage, got %T", hookMessage)
+	}
+	if hookEvent.HookEventName != "PreToolUse" || hookEvent.SessionID == nil || *hookEvent.SessionID != "session-1" {
+		t.Fatalf("unexpected hook event: %#v", hookEvent)
+	}
+}
+
+func TestParsePayloadUpstreamV078ResultFields(t *testing.T) {
+	payload := map[string]any{
+		"type":            "result",
+		"subtype":         "success",
+		"duration_ms":     1000,
+		"duration_api_ms": 900,
+		"is_error":        true,
+		"num_turns":       3,
+		"session_id":      "session-1",
+		"deferred_tool_use": map[string]any{
+			"id":    "toolu_1",
+			"name":  "Bash",
+			"input": map[string]any{"command": "make test"},
+		},
+		"errors":           []any{"rate limited"},
+		"api_error_status": 429,
+	}
+
+	message, err := ParsePayload(payload)
+	if err != nil {
+		t.Fatalf("ParsePayload returned error: %v", err)
+	}
+	result, ok := message.(*claudeagentsdk.ResultMessage)
+	if !ok {
+		t.Fatalf("expected ResultMessage, got %T", message)
+	}
+	if result.DeferredToolUse == nil || result.DeferredToolUse.Name != "Bash" {
+		t.Fatalf("unexpected deferred tool use: %#v", result.DeferredToolUse)
+	}
+	if len(result.Errors) != 1 || result.Errors[0] != "rate limited" {
+		t.Fatalf("unexpected result errors: %#v", result.Errors)
+	}
+	if result.APIErrorStatus == nil || *result.APIErrorStatus != 429 {
+		t.Fatalf("unexpected API error status: %#v", result.APIErrorStatus)
+	}
+}
+
 func TestParsePayloadMalformedKnownMessage(t *testing.T) {
 	_, err := ParsePayload(map[string]any{
 		"type": "assistant",
