@@ -123,18 +123,31 @@ func TestParseMCPStatusResponsePreservesNeedsAuthAndSDKConfig(t *testing.T) {
 					"url":  "https://example.test/mcp",
 				},
 			},
+			map[string]any{
+				"name":   "proxy-server",
+				"status": "needs-auth",
+				"config": map[string]any{
+					"type": "claudeai-proxy",
+					"url":  "https://claude.ai/proxy",
+					"id":   "proxy-abc",
+				},
+			},
 		},
 	})
 	if err != nil {
 		t.Fatalf("ParseMCPStatusResponse returned error: %v", err)
 	}
-	if len(response.MCPServers) != 2 {
-		t.Fatalf("expected 2 servers, got %d", len(response.MCPServers))
+	if len(response.MCPServers) != 3 {
+		t.Fatalf("expected 3 servers, got %d", len(response.MCPServers))
 	}
 	if response.MCPServers[1].Status != MCPServerStatusNeedsAuth {
 		t.Fatalf("expected needs-auth status, got %#v", response.MCPServers[1])
 	}
 	if _, ok := response.MCPServers[0].Config.(MCPSDKServerConfigStatus); !ok {
 		t.Fatalf("expected SDK status config, got %#v", response.MCPServers[0].Config)
+	}
+	proxy, ok := response.MCPServers[2].Config.(MCPClaudeAIProxyServerConfig)
+	if !ok || proxy.ID != "proxy-abc" {
+		t.Fatalf("expected claudeai-proxy status config, got %#v", response.MCPServers[2].Config)
 	}
 }

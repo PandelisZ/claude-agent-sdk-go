@@ -2,7 +2,10 @@ package claudeagentsdk
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
+
+	internalhooks "github.com/PandelisZ/claude-agent-sdk-go/sdk-go/internal/hooks"
 )
 
 func TestClaudeAgentOptionsContractFields(t *testing.T) {
@@ -170,6 +173,107 @@ func TestUpstreamV078OptionAndTypeContracts(t *testing.T) {
 	}
 
 	_ = modeAuto
+}
+
+func TestPythonPermissionUpdateWireRoundTrip(t *testing.T) {
+	behavior := PermissionBehaviorAllow
+	destination := PermissionUpdateDestinationLocalSettings
+	ruleContent := "npm *"
+	update := PermissionUpdate{
+		Type:        "addRules",
+		Destination: &destination,
+		Behavior:    &behavior,
+		Rules: []PermissionRuleValue{
+			{ToolName: "Bash", RuleContent: &ruleContent},
+			{ToolName: "Read"},
+		},
+	}
+
+	encoded := update.ToMap()
+	if encoded["type"] != "addRules" || encoded["destination"] != "localSettings" || encoded["behavior"] != "allow" {
+		t.Fatalf("unexpected encoded permission update: %#v", encoded)
+	}
+	rules, ok := encoded["rules"].([]map[string]any)
+	if !ok || len(rules) != 2 {
+		t.Fatalf("unexpected encoded rules: %#v", encoded["rules"])
+	}
+	if rules[0]["toolName"] != "Bash" || rules[0]["ruleContent"] != "npm *" {
+		t.Fatalf("unexpected first rule: %#v", rules[0])
+	}
+	if _, ok := rules[1]["ruleContent"]; ok {
+		t.Fatalf("nil ruleContent should be omitted: %#v", rules[1])
+	}
+
+	parsed, err := internalhooks.ParsePermissionUpdates([]any{
+		map[string]any{
+			"type":        "setMode",
+			"mode":        "acceptEdits",
+			"destination": "session",
+		},
+		map[string]any{
+			"type":        "addDirectories",
+			"directories": []any{"/tmp/a", "/tmp/b"},
+			"destination": "userSettings",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ParsePermissionUpdates returned error: %v", err)
+	}
+	if parsed[0].Mode == nil || *parsed[0].Mode != "acceptEdits" {
+		t.Fatalf("unexpected setMode update: %#v", parsed[0])
+	}
+	if len(parsed[1].Directories) != 2 || parsed[1].Directories[1] != "/tmp/b" {
+		t.Fatalf("unexpected directories update: %#v", parsed[1])
+	}
+}
+
+func TestAgentDefinitionSerializesWithPythonCLIKeys(t *testing.T) {
+	model := "claude-opus-4-5"
+	memory := "project"
+	initialPrompt := "/review-pr 123"
+	maxTurns := 10
+	agent := AgentDefinition{
+		Description:     "test",
+		Prompt:          "p",
+		DisallowedTools: []string{"Bash", "Write"},
+		Model:           &model,
+		Skills:          []string{"skill-a", "skill-b"},
+		Memory:          &memory,
+		MCPServers: []any{
+			"slack",
+			map[string]any{"local": map[string]any{"command": "python", "args": []string{"server.py"}}},
+		},
+		InitialPrompt: &initialPrompt,
+		MaxTurns:      &maxTurns,
+	}
+
+	raw, err := json.Marshal(agent)
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	if _, ok := payload["disallowed_tools"]; ok {
+		t.Fatalf("unexpected snake_case disallowed_tools key: %#v", payload)
+	}
+	if _, ok := payload["max_turns"]; ok {
+		t.Fatalf("unexpected snake_case max_turns key: %#v", payload)
+	}
+	if _, ok := payload["initial_prompt"]; ok {
+		t.Fatalf("unexpected snake_case initial_prompt key: %#v", payload)
+	}
+	if _, ok := payload["mcp_servers"]; ok {
+		t.Fatalf("unexpected snake_case mcp_servers key: %#v", payload)
+	}
+	if payload["initialPrompt"] != "/review-pr 123" || payload["model"] != "claude-opus-4-5" {
+		t.Fatalf("unexpected agent payload: %#v", payload)
+	}
+	if servers, ok := payload["mcpServers"].([]any); !ok || len(servers) != 2 {
+		t.Fatalf("unexpected mcpServers payload: %#v", payload["mcpServers"])
+	}
 }
 
 func TestContentBlockContracts(t *testing.T) {
